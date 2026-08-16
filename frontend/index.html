@@ -7,42 +7,41 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=5" />
+  <link rel="stylesheet" href="styles.css?v=10" />
 </head>
 <body>
   <div id="app" class="shell">
-    <aside class="sidebar">
+    <aside id="sidebar" class="sidebar">
       <div class="brand">
-        <span class="logo" aria-hidden="true">
-          <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-            <rect width="28" height="28" rx="8" fill="#FF5A1F"/>
-            <path d="M9 12.2c0-2.7 2.2-4.8 5-4.8s5 2.1 5 4.8v2.1c0 1.1-.4 2-1.2 2.6l.8 1.6c.1.3 0 .6-.3.7h-8.6c-.3-.1-.4-.4-.3-.7l.8-1.6A3.6 3.6 0 0 1 9 14.3v-2.1Z" fill="white"/>
-            <path d="M11.2 20.2h5.6c.3 0 .5.2.5.5s-.2.5-.5.5h-5.6c-.3 0-.5-.2-.5-.5s.2-.5.5-.5Z" fill="white"/>
+        <button type="button" id="btn-collapse" class="icon-btn collapse-btn" title="Collapse chat">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+            <rect x="3.5" y="4.5" width="17" height="15" rx="2.2"/>
+            <path d="M9 4.5v15"/>
           </svg>
-        </span>
+        </button>
         <span class="brand-name">TaxiVoice</span>
       </div>
 
       <div id="chat" class="chat"></div>
 
       <form id="composer" class="composer">
-        <textarea id="prompt" rows="2" placeholder="How can I help you today?"></textarea>
-        <div class="composer-bar">
-          <button type="button" class="icon-btn" id="btn-import" title="Import audio or video">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+        <textarea id="prompt" rows="1" placeholder="How can I help you today?"></textarea>
+        <div class="composer-tools">
+          <button type="button" class="attach-btn" id="btn-import" title="Attach audio or video">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
           </button>
-          <button type="button" class="model-pill" title="Local Parakeet v3 + edit agent">Parakeet v3</button>
-          <span class="spacer"></span>
-          <button type="submit" class="icon-btn send" title="Send">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2 11 13"/><path d="M22 2 15 22 11 13 2 9 22 2z"/></svg>
+          <span class="model-hint">Parakeet v3</span>
+          <button type="submit" id="btn-send" class="send-circle" title="Send" disabled>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m6 11 6-6 6 6"/></svg>
           </button>
         </div>
       </form>
     </aside>
+    <div id="resizer" class="resizer" role="separator" aria-orientation="vertical" title="Drag to resize chat"></div>
 
     <main class="main">
       <header class="topbar">
-        <div class="top-left">
+        <div class="top-left editor-only" hidden>
           <button id="project-name" class="project-name">Untitled</button>
           <div class="history">
             <button id="btn-undo" class="icon-btn" title="Undo" disabled>
@@ -54,13 +53,12 @@
           </div>
         </div>
         <div class="top-right">
-          <button id="btn-upload-top" class="upload-btn" type="button">Upload</button>
-          <button id="btn-share" class="text-btn">Share</button>
-          <button id="btn-export" class="export-btn">Export</button>
+          <button id="btn-share" class="text-btn editor-only" hidden>Share</button>
+          <button id="btn-export" class="export-btn editor-only" hidden>Export</button>
         </div>
       </header>
 
-      <section class="stage">
+      <section class="stage empty" id="stage">
         <div id="dropzone" class="dropzone">
           <div class="drop-icon" aria-hidden="true">
             <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
@@ -98,7 +96,7 @@
         </div>
       </section>
 
-      <footer class="transport">
+      <footer class="transport editor-only" hidden>
         <div class="transport-controls">
           <button class="icon-btn" title="Fit" type="button">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
@@ -132,6 +130,6 @@
 
   <input id="file" type="file" accept="audio/*,video/*,.mp3,.wav,.m4a,.mp4,.mov,.mkv" hidden />
   <audio id="audio" preload="auto"></audio>
-  <script src="app.js?v=5"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>

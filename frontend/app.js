@@ -77,15 +77,13 @@ function renderChat() {
   const msgs = state.project?.messages || [
     {
       role: "assistant",
-      text: "Import an audio or video file. I will transcribe it with word-level timestamps so you can delete words like Descript.",
+      text: "Drop an audio or video file and I’ll transcribe it into words you can edit.",
     },
   ];
   chatEl.innerHTML = msgs
     .map((m) => {
-      const who = m.role === "user" ? "You" : "TaxiVoice";
       const kind = m.role === "user" ? "user" : "assistant";
-      const when = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-      return `<article class="bubble ${kind}"><div class="bubble-head"><span class="who">${who}</span><span class="when">${when}</span></div><p>${escapeHtml(m.text)}</p></article>`;
+      return `<article class="msg ${kind}"><p>${escapeHtml(m.text)}</p></article>`;
     })
     .join("");
   chatEl.scrollTop = chatEl.scrollHeight;
@@ -106,6 +104,10 @@ function setStageMode(mode) {
   $("dropzone").hidden = mode !== "empty";
   $("loading").hidden = mode !== "loading";
   $("stage-row").hidden = mode !== "ready";
+  $("stage").classList.toggle("empty", mode !== "ready");
+  document.querySelectorAll(".editor-only").forEach((el) => {
+    el.hidden = mode !== "ready";
+  });
 }
 
 function renderWords() {
@@ -401,7 +403,6 @@ function pickFile() {
   fileEl.click();
 }
 $("btn-import").onclick = pickFile;
-$("btn-upload-top").onclick = pickFile;
 $("btn-upload-main").onclick = pickFile;
 fileEl.onchange = () => {
   const f = fileEl.files?.[0];
@@ -412,6 +413,8 @@ $("composer").onsubmit = (e) => {
   e.preventDefault();
   const text = $("prompt").value;
   $("prompt").value = "";
+  $("prompt").style.height = "auto";
+  syncSend();
   sendChat(text);
 };
 
@@ -518,18 +521,62 @@ audioEl.addEventListener("timeupdate", () => {
   highlightWord(audioEl.currentTime);
 });
 
-async function boot() {
+const SIDEBAR_MIN = 260;
+const SIDEBAR_MAX = 520;
+
+function applySidebarWidth(px) {
+  const w = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, px));
+  document.documentElement.style.setProperty("--sidebar-w", `${w}px`);
+  localStorage.setItem("tv-sidebar-w", String(w));
+  return w;
+}
+
+function setChatCollapsed(on) {
+  $("app").classList.toggle("chat-collapsed", on);
+  $("btn-collapse").title = on ? "Open chat" : "Collapse chat";
+  localStorage.setItem("tv-chat-collapsed", on ? "1" : "0");
+}
+
+$("btn-collapse").onclick = () => {
+  setChatCollapsed(!$("app").classList.contains("chat-collapsed"));
+};
+
+(() => {
+  const saved = Number(localStorage.getItem("tv-sidebar-w"));
+  if (saved) applySidebarWidth(saved);
+  if (localStorage.getItem("tv-chat-collapsed") === "1") setChatCollapsed(true);
+})();
+
+$("resizer").addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  $("app").classList.add("resizing");
+  const startX = e.clientX;
+  const startW = $("sidebar").getBoundingClientRect().width;
+  const move = (ev) => applySidebarWidth(startW + (ev.clientX - startX));
+  const up = () => {
+    $("app").classList.remove("resizing");
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
+});
+
+function syncSend() {
+  $("btn-send").disabled = !$("prompt").value.trim();
+}
+$("prompt").addEventListener("input", () => {
+  const el = $("prompt");
+  el.style.height = "auto";
+  el.style.height = `${Math.min(120, el.scrollHeight)}px`;
+  syncSend();
+});
+syncSend();
+
+function boot() {
+  state.project = null;
+  pause();
   setStageMode("empty");
   renderChat();
-  drawWave();
-  renderRuler();
-  try {
-    const p = await api("/api/projects/latest");
-    if (p && p.id && Array.isArray(p.words) && p.words.length) {
-      applyProject(p);
-    }
-  } catch {
-    /* empty canvas is fine */
-  }
 }
 boot();
