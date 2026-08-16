@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import time
 import uuid
 import wave
 from pathlib import Path
 
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -46,8 +47,56 @@ def _load(pid: str) -> dict:
 
 
 def _save(meta: dict) -> None:
+    meta["updated_at"] = time.time()
+    if "created_at" not in meta:
+        meta["created_at"] = meta["updated_at"]
     path = DATA / meta["id"] / "project.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(meta, indent=2))
+
+
+def _empty_session(name: str = "New chat") -> dict:
+    pid = uuid.uuid4().hex[:12]
+    return {
+        "id": pid,
+        "name": name,
+        "kind": None,
+        "original": None,
+        "wav44": None,
+        "duration": 0,
+        "model": None,
+        "words": [],
+        "deleted": [],
+        "undo": [],
+        "redo": [],
+        "peaks": [],
+        "thumbs": [],
+        "messages": [
+            {
+                "role": "assistant",
+                "text": "This is a new workspace. Drop an audio or video file to transcribe it.",
+            }
+        ],
+    }
+
+
+def _summarize(meta: dict, path: Path) -> dict:
+    words = meta.get("words") or []
+    deleted = set(meta.get("deleted") or [])
+    kept = [w.get("word", "") for w in words if int(w.get("id", -1)) not in deleted]
+    msgs = meta.get("messages") or []
+    last_user = next((m.get("text") for m in reversed(msgs) if m.get("role") == "user"), "")
+    preview = " ".join(kept)[:90] or last_user[:90]
+    return {
+        "id": meta["id"],
+        "name": meta.get("name") or "New chat",
+        "kind": meta.get("kind"),
+        "duration": meta.get("duration") or 0,
+        "has_audio": bool(words),
+        "word_count": len(kept),
+        "preview": preview,
+        "updated_at": meta.get("updated_at") or path.stat().st_mtime,
+    }
 
 
 def _read_wav(path: Path) -> tuple[np.ndarray, int]:
@@ -102,14 +151,41 @@ def health():
     return {"ok": True, "parakeet": have_parakeet()}
 
 
+@app.get("/api/projects")
+def list_projects():
+    items = []
+    for path in DATA.glob("*/project.json"):
+        try:
+            meta = json.loads(path.read_text())
+            items.append(_summarize(meta, path))
+        except Exception:
+            continue
+    items.sort(key=lambda x: x.get("updated_at") or 0, reverse=True)
+    return {"projects": items}
+
+
+@app.post("/api/projects")
+def create_project():
+    meta = _empty_session()
+    _save(meta)
+    return _public(meta)
+
+
 @app.post("/api/projects/import")
-async def import_media(file: UploadFile = File(...)):
+async def import_media(file: UploadFile = File(...), session_id: str | None = Form(None)):
     if not have_parakeet():
         raise HTTPException(500, "Parakeet v3 is not installed on this Mac")
 
-    pid = uuid.uuid4().hex[:12]
+    existing = None
+    if session_id:
+        try:
+            existing = _load(session_id)
+        except HTTPException:
+            existing = None
+    reuse = bool(existing and not (existing.get("words") or []))
+    pid = existing["id"] if reuse else uuid.uuid4().hex[:12]
     dest = DATA / pid
-    dest.mkdir(parents=True)
+    dest.mkdir(parents=True, exist_ok=True)
     original = dest / f"original{Path(file.filename or 'media.bin').suffix.lower() or '.bin'}"
     original.write_bytes(await file.read())
 
@@ -146,6 +222,16 @@ async def import_media(file: UploadFile = File(...)):
                 thumbs.append(f"/api/projects/{pid}/thumbs/{i}.jpg")
 
     name = Path(file.filename or "Untitled").stem.replace("_", " ")[:48]
+    prior_msgs = list((existing or {}).get("messages") or [])
+    prior_msgs.append(
+        {
+            "role": "assistant",
+            "text": (
+                f"Transcribed {len(words)} words with Parakeet v3. "
+                "Delete any word, or ask me to remove fillers and repeats."
+            ),
+        }
+    )
     meta = {
         "id": pid,
         "name": name or "Untitled",
@@ -160,15 +246,8 @@ async def import_media(file: UploadFile = File(...)):
         "redo": [],
         "peaks": peaks,
         "thumbs": thumbs,
-        "messages": [
-            {
-                "role": "assistant",
-                "text": (
-                    f"Transcribed {len(words)} words with Parakeet v3. "
-                    "Delete any word, or ask me to remove fillers and repeats."
-                ),
-            }
-        ],
+        "messages": prior_msgs,
+        "created_at": (existing or {}).get("created_at"),
     }
     _save(meta)
     return _public(meta)

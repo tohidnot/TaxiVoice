@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=13" />
+  <link rel="stylesheet" href="styles.css?v=16" />
 </head>
 <body>
   <div id="app" class="shell">
@@ -20,12 +20,35 @@
           </svg>
           <span class="brand-name">TaxiVoice</span>
         </span>
-        <button type="button" id="btn-collapse" class="icon-btn collapse-btn" title="Collapse chat">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
-            <rect x="3.5" y="4.5" width="17" height="15" rx="2.2"/>
-            <path d="M9 4.5v15"/>
-          </svg>
-        </button>
+        <div class="brand-actions">
+          <button type="button" id="btn-history" class="icon-btn" title="History">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 12a9 9 0 1 0 3-6.7"/>
+              <path d="M3 4v5h5"/>
+              <path d="M12 7v5l3 2"/>
+            </svg>
+          </button>
+          <button type="button" id="btn-new" class="icon-btn" title="New workspace">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <rect x="4" y="4" width="16" height="16" rx="4"/>
+              <path d="M12 8v8M8 12h8"/>
+            </svg>
+          </button>
+          <button type="button" id="btn-collapse" class="icon-btn collapse-btn" title="Collapse chat">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+              <rect x="3.5" y="4.5" width="17" height="15" rx="2.2"/>
+              <path d="M9 4.5v15"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div id="history-pane" class="history-pane" hidden>
+        <div class="history-head">
+          <span>Workspaces</span>
+          <button type="button" id="btn-history-new" class="history-new">New</button>
+        </div>
+        <div id="history-list" class="history-list"></div>
       </div>
 
       <div id="chat" class="chat"></div>
@@ -47,6 +70,12 @@
 
     <main class="main">
       <header class="topbar">
+        <button type="button" id="btn-expand" class="icon-btn expand-chat" hidden title="Open chat">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+            <rect x="3.5" y="4.5" width="17" height="15" rx="2.2"/>
+            <path d="M9 4.5v15"/>
+          </svg>
+        </button>
         <div class="top-left editor-only" hidden>
           <button id="project-name" class="project-name">Untitled</button>
           <div class="history">
@@ -136,6 +165,6 @@
 
   <input id="file" type="file" accept="audio/*,video/*,.mp3,.wav,.m4a,.mp4,.mov,.mkv" hidden />
   <audio id="audio" preload="auto"></audio>
-  <script src="app.js?v=12"></script>
+  <script src="app.js?v=16"></script>
 </body>
 </html>

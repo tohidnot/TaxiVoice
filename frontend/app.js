@@ -287,6 +287,9 @@ async function importFile(file) {
   renderChat();
   $("project-name").textContent = pending.name;
   try {
+    if (state.project?.id && !hasWords()) {
+      fd.append("session_id", state.project.id);
+    }
     const p = await api("/api/projects/import", { method: "POST", body: fd });
     state.editedTime = 0;
     state.importing = false;
@@ -310,15 +313,8 @@ async function deleteIds(ids) {
 
 async function sendChat(text) {
   if (!text.trim()) return;
-  if (!state.project) {
-    applyProject({
-      words: [],
-      messages: [
-        { role: "user", text },
-        { role: "assistant", text: "Import a file first — use Upload." },
-      ],
-    });
-    return;
+  if (!state.project?.id) {
+    await createWorkspace();
   }
   applyProject(await api(`/api/projects/${state.project.id}/agent`, {
     method: "POST",
@@ -533,13 +529,14 @@ function applySidebarWidth(px) {
 
 function setChatCollapsed(on) {
   $("app").classList.toggle("chat-collapsed", on);
-  $("btn-collapse").title = on ? "Open chat" : "Collapse chat";
+  $("btn-expand").hidden = !on;
+  $("btn-collapse").title = "Collapse chat";
+  $("btn-expand").title = "Open chat";
   localStorage.setItem("tv-chat-collapsed", on ? "1" : "0");
 }
 
-$("btn-collapse").onclick = () => {
-  setChatCollapsed(!$("app").classList.contains("chat-collapsed"));
-};
+$("btn-collapse").onclick = () => setChatCollapsed(true);
+$("btn-expand").onclick = () => setChatCollapsed(false);
 
 (() => {
   const saved = Number(localStorage.getItem("tv-sidebar-w"));
@@ -573,9 +570,85 @@ $("prompt").addEventListener("input", () => {
 });
 syncSend();
 
+function setHistoryOpen(on) {
+  $("history-pane").hidden = !on;
+  $("chat").hidden = on;
+  $("composer").hidden = on;
+  $("btn-history").classList.toggle("active-icon", on);
+}
+
+function formatWhen(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+async function refreshHistory() {
+  const data = await api("/api/projects");
+  const items = data.projects || [];
+  const current = state.project?.id;
+  $("history-list").innerHTML = items.length
+    ? items
+        .map((p) => {
+          const meta = p.has_audio
+            ? `${p.kind || "audio"} · ${p.word_count} words · ${formatWhen(p.updated_at)}`
+            : `No audio yet · ${formatWhen(p.updated_at)}`;
+          const extra = p.preview ? `<span class="h-meta">${escapeHtml(p.preview)}</span>` : "";
+          return `<button type="button" class="history-item${p.id === current ? " active" : ""}" data-id="${p.id}">
+            <span class="h-name">${escapeHtml(p.name)}</span>
+            <span class="h-meta">${escapeHtml(meta)}</span>
+            ${extra}
+          </button>`;
+        })
+        .join("")
+    : `<p class="h-meta" style="padding:8px">No workspaces yet.</p>`;
+}
+
+async function createWorkspace() {
+  pause();
+  const p = await api("/api/projects", { method: "POST" });
+  audioEl.removeAttribute("src");
+  state.editedTime = 0;
+  applyProject(p);
+  setStageMode("empty");
+  setHistoryOpen(false);
+  return p;
+}
+
+async function openWorkspace(id) {
+  pause();
+  const p = await api(`/api/projects/${id}`);
+  state.editedTime = 0;
+  applyProject(p);
+  if (!hasWords()) setStageMode("empty");
+  setHistoryOpen(false);
+}
+
+$("btn-history").onclick = async () => {
+  const open = $("history-pane").hidden;
+  if (open) {
+    try {
+      await refreshHistory();
+    } catch (err) {
+      console.error(err);
+    }
+  }
+  setHistoryOpen(open);
+};
+
+$("btn-new").onclick = () => createWorkspace();
+$("btn-history-new").onclick = () => createWorkspace();
+
+$("history-list").addEventListener("click", (e) => {
+  const item = e.target.closest("[data-id]");
+  if (item) openWorkspace(item.dataset.id);
+});
+
 function boot() {
   state.project = null;
   pause();
+  setHistoryOpen(false);
   setStageMode("empty");
   renderChat();
 }
