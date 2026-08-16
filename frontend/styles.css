@@ -26,18 +26,18 @@ button, textarea { font: inherit; }
   overflow: hidden;
 }
 .shell.chat-collapsed {
-  grid-template-columns: 76px 0 1fr;
+  grid-template-columns: 112px 0 1fr;
 }
 .shell.resizing { cursor: col-resize; user-select: none; }
 .shell.chat-collapsed .resizer { display: none !important; }
 .shell.chat-collapsed .sidebar {
-  padding: 12px 10px;
+  padding: 0 8px 12px;
 }
 .shell.chat-collapsed .brand {
-  padding: 46px 0 0;
-  justify-content: center;
+  padding: 0 8px 0 78px;
+  justify-content: flex-end;
 }
-.shell.chat-collapsed .brand-name,
+.shell.chat-collapsed .brand-mark,
 .shell.chat-collapsed .chat,
 .shell.chat-collapsed .composer { display: none !important; }
 .shell.chat-collapsed .collapse-btn { margin: 0; }
@@ -48,29 +48,43 @@ button, textarea { font: inherit; }
   flex-direction: column;
   min-width: 0;
   background: var(--sidebar);
-  padding: 10px 12px 14px;
+  padding: 0 12px 14px;
   -webkit-app-region: drag;
 }
 .sidebar button, .sidebar textarea, .sidebar form { -webkit-app-region: no-drag; }
 
 .brand {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 2px 14px 62px;
+  justify-content: flex-end;
+  height: 52px;
+  padding: 0 2px 0 78px;
 }
+.brand-mark {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  pointer-events: none;
+}
+.brand-mic { display: block; flex: 0 0 20px; width: 20px; height: 20px; }
 .brand-name {
   font-weight: 650;
   font-size: 16px;
-  letter-spacing: -0.03em;
-  color: #111;
-  flex: 1;
+  letter-spacing: -0.035em;
+  color: var(--orange);
+  line-height: 1;
 }
 .collapse-btn {
   color: #3f3f46;
   width: 30px;
   height: 30px;
   border-radius: 8px;
+  z-index: 2;
 }
 
 .chat {
@@ -177,14 +191,7 @@ button, textarea { font: inherit; }
   position: relative;
   -webkit-app-region: no-drag;
 }
-.resizer::after {
-  content: "";
-  position: absolute;
-  inset: 0 2px;
-  background: #e8e8ea;
-}
-.resizer:hover::after,
-.shell.resizing .resizer::after { background: #c8c8cc; }
+.resizer::after { display: none; }
 
 .shell.chat-collapsed .main { padding-left: 0; }
 

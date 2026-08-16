@@ -7,19 +7,25 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=10" />
+  <link rel="stylesheet" href="styles.css?v=13" />
 </head>
 <body>
   <div id="app" class="shell">
     <aside id="sidebar" class="sidebar">
       <div class="brand">
+        <span class="brand-mark">
+          <svg class="brand-mic" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+            <path fill="#111" d="M12 14a3.2 3.2 0 0 0 3.2-3.2V6.2A3.2 3.2 0 0 0 12 3 3.2 3.2 0 0 0 8.8 6.2v4.6A3.2 3.2 0 0 0 12 14Z"/>
+            <path fill="#111" d="M18 10.8a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.92V19H9.2a1 1 0 1 0 0 2h5.6a1 1 0 1 0 0-2H13v-2.28A6 6 0 0 0 18 10.8Z"/>
+          </svg>
+          <span class="brand-name">TaxiVoice</span>
+        </span>
         <button type="button" id="btn-collapse" class="icon-btn collapse-btn" title="Collapse chat">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
             <rect x="3.5" y="4.5" width="17" height="15" rx="2.2"/>
             <path d="M9 4.5v15"/>
           </svg>
         </button>
-        <span class="brand-name">TaxiVoice</span>
       </div>
 
       <div id="chat" class="chat"></div>
@@ -130,6 +136,6 @@
 
   <input id="file" type="file" accept="audio/*,video/*,.mp3,.wav,.m4a,.mp4,.mov,.mkv" hidden />
   <audio id="audio" preload="auto"></audio>
-  <script src="app.js?v=10"></script>
+  <script src="app.js?v=12"></script>
 </body>
 </html>
