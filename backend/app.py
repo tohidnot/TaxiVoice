@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 import subprocess
@@ -33,6 +34,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_no_cache_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 def _proj_dir(pid: str) -> Path:
@@ -171,6 +181,15 @@ def create_project():
     return _public(meta)
 
 
+@app.delete("/api/projects/{pid}")
+def delete_project(pid: str):
+    import shutil
+    dest = DATA / pid
+    if dest.exists() and dest.is_dir():
+        shutil.rmtree(dest)
+    return {"ok": True}
+
+
 @app.post("/api/projects/import")
 async def import_media(file: UploadFile = File(...), session_id: str | None = Form(None)):
     if not have_parakeet():
@@ -225,6 +244,12 @@ async def import_media(file: UploadFile = File(...), session_id: str | None = Fo
     prior_msgs = list((existing or {}).get("messages") or [])
     prior_msgs.append(
         {
+            "role": "user",
+            "text": f"Import {file.filename}",
+        }
+    )
+    prior_msgs.append(
+        {
             "role": "assistant",
             "text": (
                 f"Transcribed {len(words)} words with Parakeet v3. "
@@ -263,6 +288,23 @@ class ChatBody(BaseModel):
 
 class BoundsBody(BaseModel):
     updates: list[dict]
+
+
+class SplitBody(BaseModel):
+    time: float
+
+
+class TrimBody(BaseModel):
+    start: float
+    end: float
+
+
+class ReorderBody(BaseModel):
+    order: list[list[int]]
+
+
+class DuplicateBody(BaseModel):
+    ids: list[int]
 
 
 @app.get("/api/projects/latest")
@@ -309,12 +351,21 @@ def restore_words(pid: str, body: IdsBody):
 @app.post("/api/projects/{pid}/undo")
 def undo(pid: str):
     meta = _load(pid)
-    undo = meta.get("undo") or []
-    if not undo:
+    undo_stack = meta.get("undo") or []
+    if not undo_stack:
         return _public(meta)
-    meta.setdefault("redo", []).append(meta.get("deleted") or [])
-    meta["deleted"] = undo.pop()
-    meta["undo"] = undo
+    prev = undo_stack.pop()
+    meta.setdefault("redo", []).append({
+        "deleted": list(meta.get("deleted") or []),
+        "words": copy.deepcopy(meta.get("words") or []),
+    })
+    if isinstance(prev, dict):
+        meta["deleted"] = prev.get("deleted", [])
+        if "words" in prev:
+            meta["words"] = prev["words"]
+    elif isinstance(prev, list):
+        meta["deleted"] = prev
+    meta["undo"] = undo_stack
     _save(meta)
     return _public(meta)
 
@@ -322,12 +373,21 @@ def undo(pid: str):
 @app.post("/api/projects/{pid}/redo")
 def redo(pid: str):
     meta = _load(pid)
-    redo = meta.get("redo") or []
-    if not redo:
+    redo_stack = meta.get("redo") or []
+    if not redo_stack:
         return _public(meta)
-    meta.setdefault("undo", []).append(meta.get("deleted") or [])
-    meta["deleted"] = redo.pop()
-    meta["redo"] = redo
+    nxt = redo_stack.pop()
+    meta.setdefault("undo", []).append({
+        "deleted": list(meta.get("deleted") or []),
+        "words": copy.deepcopy(meta.get("words") or []),
+    })
+    if isinstance(nxt, dict):
+        meta["deleted"] = nxt.get("deleted", [])
+        if "words" in nxt:
+            meta["words"] = nxt["words"]
+    elif isinstance(nxt, list):
+        meta["deleted"] = nxt
+    meta["redo"] = redo_stack
     _save(meta)
     return _public(meta)
 
@@ -335,7 +395,8 @@ def redo(pid: str):
 @app.post("/api/projects/{pid}/bounds")
 def update_bounds(pid: str, body: BoundsBody):
     meta = _load(pid)
-    by_id = {int(w["id"]): w for w in meta["words"]}
+    words = meta.get("words") or []
+    by_id = {int(w["id"]): w for w in words}
     changed = False
     for item in body.updates:
         w = by_id.get(int(item.get("id", -1)))
@@ -347,10 +408,264 @@ def update_bounds(pid: str, body: BoundsBody):
         if "cut_end" in item and item["cut_end"] is not None:
             w["cut_end"] = round(float(item["cut_end"]), 4)
             changed = True
-        if w.get("cut_end", w["end"]) < w.get("cut_start", w["start"]) + 0.03:
-            w["cut_end"] = round(w.get("cut_start", w["start"]) + 0.03, 4)
+        if w.get("cut_end", w["end"]) < w.get("cut_start", w["start"]) + 0.02:
+            w["cut_end"] = round(w.get("cut_start", w["start"]) + 0.02, 4)
     if changed:
+        meta.setdefault("undo", []).append({
+            "deleted": list(meta.get("deleted") or []),
+            "words": copy.deepcopy(words),
+        })
+        meta["redo"] = []
         _save(meta)
+    return _public(meta)
+
+
+@app.post("/api/projects/{pid}/split")
+def split_at_time(pid: str, body: SplitBody):
+    meta = _load(pid)
+    t = round(float(body.time), 4)
+    words = meta.get("words") or []
+    if not words:
+        raise HTTPException(400, "no words to split")
+
+    meta.setdefault("undo", []).append({
+        "deleted": list(meta.get("deleted") or []),
+        "words": copy.deepcopy(words),
+    })
+    meta["redo"] = []
+
+    # Find the word to split
+    idx = -1
+    for i, w in enumerate(words):
+        s = float(w.get("cut_start", w["start"]))
+        e = float(w.get("cut_end", w["end"]))
+        if s <= t <= e:
+            idx = i
+            break
+        elif i + 1 < len(words):
+            next_s = float(words[i+1].get("cut_start", words[i+1]["start"]))
+            if e <= t <= next_s:
+                w["cut_end"] = t
+                words[i+1]["cut_start"] = t
+                _save(meta)
+                return _public(meta)
+
+    if idx == -1:
+        if t < float(words[0].get("cut_start", words[0]["start"])):
+            idx = 0
+        else:
+            idx = len(words) - 1
+
+    target = words[idx]
+    s = float(target.get("cut_start", target["start"]))
+    e = float(target.get("cut_end", target["end"]))
+    split_t = max(s + 0.02, min(e - 0.02, t))
+
+    max_id = max((int(w["id"]) for w in words), default=0)
+    new_id = max_id + 1
+
+    w1 = dict(target)
+    w1["end"] = round(split_t, 4)
+    w1["cut_end"] = round(split_t, 4)
+
+    w2 = dict(target)
+    w2["id"] = new_id
+    w2["start"] = round(split_t, 4)
+    w2["cut_start"] = round(split_t, 4)
+
+    words[idx : idx + 1] = [w1, w2]
+    meta["words"] = words
+    _save(meta)
+    return _public(meta)
+
+
+@app.post("/api/projects/{pid}/trim")
+def trim_range(pid: str, body: TrimBody):
+    meta = _load(pid)
+    t0 = round(float(body.start), 4)
+    t1 = round(float(body.end), 4)
+    if t1 <= t0:
+        raise HTTPException(400, "invalid trim range")
+
+    words = meta.get("words") or []
+    if not words:
+        raise HTTPException(400, "no words to trim")
+
+    meta.setdefault("undo", []).append({
+        "deleted": list(meta.get("deleted") or []),
+        "words": copy.deepcopy(words),
+    })
+    meta["redo"] = []
+
+    deleted = set(meta.get("deleted") or [])
+    for w in words:
+        wid = int(w["id"])
+        ws = float(w.get("cut_start", w["start"]))
+        we = float(w.get("cut_end", w["end"]))
+        if we <= t0 or ws >= t1:
+            deleted.add(wid)
+        else:
+            if ws < t0:
+                w["cut_start"] = t0
+            if we > t1:
+                w["cut_end"] = t1
+
+    meta["deleted"] = sorted(deleted)
+    meta["words"] = words
+    _save(meta)
+    return _public(meta)
+
+
+@app.post("/api/projects/{pid}/append")
+async def append_media(pid: str, file: UploadFile = File(...)):
+    if not have_parakeet():
+        raise HTTPException(500, "Parakeet v3 is not installed on this Mac")
+    meta = _load(pid)
+    dest = DATA / pid
+    dest.mkdir(parents=True, exist_ok=True)
+
+    clip_stamp = int(time.time() * 1000)
+    clip_ext = Path(file.filename or "media.bin").suffix.lower() or ".bin"
+    clip_file = dest / f"clip_{clip_stamp}{clip_ext}"
+    clip_file.write_bytes(await file.read())
+
+    is_vid = is_video(clip_file)
+    if is_vid and meta.get("kind") != "video":
+        meta["kind"] = "video"
+        meta["original"] = str(clip_file)
+
+    wav16 = dest / f"temp_{clip_stamp}.16k.wav"
+    wav44 = dest / f"temp_{clip_stamp}.44100.wav"
+    to_wav(clip_file, wav16, 16000)
+    to_wav(clip_file, wav44, 44100)
+
+    asr = transcribe_wav(wav16)
+    new_pcm, sr = _read_wav(wav44)
+
+    old_wav_path = Path(meta["wav44"]) if meta.get("wav44") else None
+    if old_wav_path and old_wav_path.exists():
+        old_pcm, old_sr = _read_wav(old_wav_path)
+        prior_duration = round(len(old_pcm) / old_sr, 4)
+        combined_pcm = np.concatenate([old_pcm, new_pcm])
+    else:
+        prior_duration = 0.0
+        combined_pcm = new_pcm
+        meta["wav44"] = str(dest / "audio.44100.wav")
+        if not meta.get("original"):
+            meta["original"] = str(clip_file)
+            meta["kind"] = "video" if is_vid else "audio"
+
+    _write_wav(Path(meta["wav44"]), combined_pcm, 44100)
+
+    if wav16.exists():
+        wav16.unlink()
+    if wav44.exists():
+        wav44.unlink()
+
+    refined = refine_words(asr.get("words", []), new_pcm, 44100)
+    existing_words = meta.get("words") or []
+    max_id = max((int(w["id"]) for w in existing_words), default=-1)
+
+    for i, w in enumerate(refined):
+        w["id"] = max_id + 1 + i
+        w["start"] = round(float(w["start"]) + prior_duration, 4)
+        w["end"] = round(float(w["end"]) + prior_duration, 4)
+        w["cut_start"] = round(float(w.get("cut_start", w["start"])) + prior_duration, 4)
+        w["cut_end"] = round(float(w.get("cut_end", w["end"])) + prior_duration, 4)
+
+    all_words = existing_words + refined
+    meta.setdefault("undo", []).append({
+        "deleted": list(meta.get("deleted") or []),
+        "words": copy.deepcopy(existing_words),
+    })
+    meta["redo"] = []
+    meta["words"] = all_words
+    meta["peaks"] = waveform_peaks(combined_pcm, 1600)
+    meta["duration"] = round(len(combined_pcm) / 44100, 3)
+
+    if is_vid:
+        tdir = dest / "thumbs"
+        tdir.mkdir(exist_ok=True)
+        curr_thumbs = list(meta.get("thumbs") or [])
+        n = 5
+        new_dur = len(new_pcm) / 44100
+        for i in range(n):
+            t = new_dur * (i + 0.5) / n
+            thumb_idx = len(curr_thumbs) + i
+            out = tdir / f"{thumb_idx}.jpg"
+            subprocess.run(
+                [
+                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                    "-ss", f"{t:.3f}", "-i", str(clip_file),
+                    "-frames:v", "1", "-vf", "scale=320:-1",
+                    str(out),
+                ],
+                check=False,
+            )
+            if out.exists():
+                curr_thumbs.append(f"/api/projects/{pid}/thumbs/{thumb_idx}.jpg")
+        meta["thumbs"] = curr_thumbs
+
+    meta.setdefault("messages", []).append({
+        "role": "assistant",
+        "text": f"Added clip '{Path(file.filename or 'clip').name}' with {len(refined)} words to the timeline.",
+    })
+    _save(meta)
+    return _public(meta)
+
+
+@app.post("/api/projects/{pid}/reorder_clips")
+def reorder_clips(pid: str, body: ReorderBody):
+    meta = _load(pid)
+    words = meta.get("words") or []
+    word_map = {int(w["id"]): w for w in words}
+    reordered = []
+    seen_ids = set()
+    for clip in body.order:
+        for wid in clip:
+            if int(wid) in word_map and int(wid) not in seen_ids:
+                reordered.append(word_map[int(wid)])
+                seen_ids.add(int(wid))
+    for w in words:
+        if int(w["id"]) not in seen_ids:
+            reordered.append(w)
+
+    meta.setdefault("undo", []).append({
+        "deleted": list(meta.get("deleted") or []),
+        "words": copy.deepcopy(words),
+    })
+    meta["redo"] = []
+    meta["words"] = reordered
+    _save(meta)
+    return _public(meta)
+
+
+@app.post("/api/projects/{pid}/duplicate_clip")
+def duplicate_clip(pid: str, body: DuplicateBody):
+    meta = _load(pid)
+    words = meta.get("words") or []
+    by_id = {int(w["id"]): w for w in words}
+    target_words = [by_id[int(i)] for i in body.ids if int(i) in by_id]
+    if not target_words:
+        raise HTTPException(400, "no words to duplicate")
+
+    max_id = max((int(w["id"]) for w in words), default=0)
+    new_words = []
+    for i, w in enumerate(target_words):
+        nw = dict(w)
+        nw["id"] = max_id + 1 + i
+        new_words.append(nw)
+
+    last_idx = max(i for i, w in enumerate(words) if int(w["id"]) in set(body.ids))
+    words[last_idx + 1 : last_idx + 1] = new_words
+
+    meta.setdefault("undo", []).append({
+        "deleted": list(meta.get("deleted") or []),
+        "words": copy.deepcopy(words),
+    })
+    meta["redo"] = []
+    meta["words"] = words
+    _save(meta)
     return _public(meta)
 
 

@@ -2,7 +2,7 @@
   "name": "taxivoice",
   "version": "0.1.0",
   "private": true,
-  "description": "Descript-style desktop audio and video editor powered by Parakeet v3",
+  "description": "AI audio and video editor by transcribing the audio/video",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",

@@ -5,6 +5,9 @@ const state = {
   playing: false,
   editedTime: 0,
   raf: 0,
+  zoomLevel: 1.0,
+  selectedClipIdx: null,
+  clips: [],
 };
 
 const chatEl = $("chat");
@@ -12,8 +15,6 @@ const wordsEl = $("words");
 const fileEl = $("file");
 const audioEl = $("audio");
 const videoEl = $("video");
-const wave = $("wave");
-const ctx = wave.getContext("2d");
 
 function fmt(t) {
   t = Math.max(0, t || 0);
@@ -86,7 +87,9 @@ function renderChat() {
       return `<article class="msg ${kind}"><p>${escapeHtml(m.text)}</p></article>`;
     })
     .join("");
-  chatEl.scrollTop = chatEl.scrollHeight;
+  requestAnimationFrame(() => {
+    chatEl.scrollTop = chatEl.scrollHeight;
+  });
 }
 
 function escapeHtml(s) {
@@ -129,6 +132,74 @@ function renderWords() {
   $("btn-play-inline").hidden = false;
 }
 
+function buildClips() {
+  const p = state.project;
+  const words = Array.isArray(p?.words) ? p.words : [];
+  if (!words.length) {
+    state.clips = [];
+    return [];
+  }
+
+  const clips = [];
+  let curWords = [];
+  let curStart = null;
+  let curEnd = null;
+
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (w.deleted) {
+      if (curWords.length) {
+        clips.push(createClipObj(clips.length, curWords, curStart, curEnd));
+        curWords = [];
+        curStart = null;
+        curEnd = null;
+      }
+      continue;
+    }
+    const s = w.cut_start ?? w.start;
+    const e = w.cut_end ?? w.end;
+    if (!curWords.length) {
+      curWords = [w];
+      curStart = s;
+      curEnd = e;
+    } else {
+      if (Math.abs(s - curEnd) > 0.08) {
+        clips.push(createClipObj(clips.length, curWords, curStart, curEnd));
+        curWords = [w];
+        curStart = s;
+        curEnd = e;
+      } else {
+        curWords.push(w);
+        curEnd = e;
+      }
+    }
+  }
+  if (curWords.length) {
+    clips.push(createClipObj(clips.length, curWords, curStart, curEnd));
+  }
+  state.clips = clips;
+  return clips;
+}
+
+function createClipObj(idx, words, start, end) {
+  const text = words.map((w) => w.word).join(" ");
+  return {
+    idx,
+    wordIds: words.map((w) => w.id),
+    start: Number(start),
+    end: Number(end),
+    duration: Math.max(0.01, Number(end) - Number(start)),
+    text: text.length > 28 ? text.slice(0, 26) + "…" : text,
+    words,
+  };
+}
+
+function getTimelineWidth() {
+  const wrap = $("timeline-scroll-wrap");
+  const baseW = wrap ? wrap.clientWidth : 800;
+  return Math.max(baseW, baseW * state.zoomLevel);
+}
+
 function renderMeta() {
   const p = state.project;
   $("project-name").textContent = p?.name || "Untitled";
@@ -137,87 +208,157 @@ function renderMeta() {
   const videoMode = p?.kind === "video";
   $("video-pane").hidden = !videoMode;
   document.querySelector(".stage-row").classList.toggle("has-video", videoMode);
-  $("wave-wrap").hidden = videoMode;
   $("filmstrip-wrap").hidden = !videoMode;
   if (videoMode) renderFilmstrip();
   renderRuler();
-  drawWave();
+  renderClips();
 }
 
 function renderRuler() {
   const dur = state.project ? editedDuration() || state.project.duration : 20;
-  const steps = 5;
-  $("ruler").innerHTML = Array.from({ length: steps }, (_, i) => {
-    const t = (dur * i) / (steps - 1);
+  const w = getTimelineWidth();
+  const content = $("timeline-content");
+  if (content) content.style.width = `${w}px`;
+
+  const numSteps = Math.max(5, Math.floor(8 * state.zoomLevel));
+  $("ruler").innerHTML = Array.from({ length: numSteps }, (_, i) => {
+    const t = (dur * i) / (numSteps - 1);
     return `<span>${fmt(t)}</span>`;
   }).join("");
 }
 
 function renderFilmstrip() {
   const p = state.project;
-  $("filmstrip").innerHTML = (p.thumbs || [])
+  $("filmstrip").innerHTML = (p?.thumbs || [])
     .map((src) => `<img src="${src}" alt="" />`)
     .join("");
 }
 
-function drawWave() {
-  const wrap = $("wave-wrap");
-  if (wrap.hidden) return;
-  const dpr = window.devicePixelRatio || 1;
-  const w = wrap.clientWidth;
-  const h = wrap.clientHeight;
-  if (w < 8) return;
-  wave.width = Math.floor(w * dpr);
-  wave.height = Math.floor(h * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, w, h);
-
-  const peaks = state.project?.peaks || [];
-  const mid = h / 2;
-  ctx.strokeStyle = "#ff5a1f";
-  ctx.lineWidth = 1.2;
-  if (!peaks.length) {
-    ctx.beginPath();
-    ctx.moveTo(12, mid);
-    ctx.lineTo(w - 12, mid);
-    ctx.stroke();
+function renderClips() {
+  const container = $("timeline-clips");
+  if (!container) return;
+  const clips = buildClips();
+  const dur = editedDuration();
+  if (!clips.length || dur <= 0) {
+    container.innerHTML = "";
+    updateClipButtons();
     return;
   }
 
-  const dur = state.project.duration || 1;
-  const ranges = keepRanges();
-  const stitched = [];
-  if (!ranges.length) {
-    for (const pk of peaks) stitched.push(pk);
-  } else {
-    for (const [a, b] of ranges) {
-      const i0 = Math.floor((a / dur) * peaks.length);
-      const i1 = Math.ceil((b / dur) * peaks.length);
-      for (let i = i0; i < i1; i++) stitched.push(peaks[i] || 0);
-    }
-  }
+  const timelineW = getTimelineWidth();
+  let accEdited = 0;
 
-  const n = stitched.length;
-  ctx.beginPath();
-  for (let x = 0; x < w; x++) {
-    const i = Math.min(n - 1, Math.floor((x / w) * n));
-    const amp = (stitched[i] || 0) * (h * 0.42);
-    ctx.moveTo(x + 0.5, mid - amp);
-    ctx.lineTo(x + 0.5, mid + amp);
-  }
-  ctx.stroke();
+  const html = clips.map((c, i) => {
+    const leftPx = (accEdited / dur) * timelineW;
+    const widthPx = Math.max(32, (c.duration / dur) * timelineW);
+    accEdited += c.duration;
+    const isSelected = state.selectedClipIdx === i;
+
+    return `
+      <div class="timeline-clip ${isSelected ? "selected" : ""}" 
+           data-clip-idx="${i}" 
+           style="left: ${leftPx.toFixed(1)}px; width: ${widthPx.toFixed(1)}px;">
+        <div class="clip-trim-handle left" data-clip-idx="${i}" title="Drag to trim start"></div>
+        <div class="clip-header">
+          <span class="clip-name">${escapeHtml(c.text || `Clip ${i + 1}`)}</span>
+          <span class="clip-dur">${c.duration.toFixed(1)}s</span>
+        </div>
+        <div class="clip-wave-wrap">
+          <canvas class="clip-wave-canvas" data-canvas-clip="${i}"></canvas>
+        </div>
+        <div class="clip-trim-handle right" data-clip-idx="${i}" title="Drag to trim end"></div>
+      </div>
+    `;
+  }).join("");
+
+  container.innerHTML = html;
+  drawClipWaveforms();
+  updateClipButtons();
+}
+
+function drawClipWaveforms() {
+  const peaks = state.project?.peaks || [];
+  const totalDur = state.project?.duration || 1;
+  const dpr = window.devicePixelRatio || 1;
+
+  document.querySelectorAll(".clip-wave-canvas").forEach((canvas) => {
+    const clipIdx = Number(canvas.dataset.canvasClip);
+    const clip = state.clips[clipIdx];
+    if (!clip) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const w = Math.floor(rect.width);
+    const h = Math.floor(rect.height);
+    if (w < 4 || h < 4) return;
+
+    canvas.width = Math.floor(w * dpr);
+    canvas.height = Math.floor(h * dpr);
+    const cctx = canvas.getContext("2d");
+    cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cctx.clearRect(0, 0, w, h);
+
+    cctx.fillStyle = "#ff5a1f";
+    const mid = h / 2;
+
+    if (!peaks.length) {
+      cctx.fillRect(0, mid - 1, w, 2);
+      return;
+    }
+
+    const i0 = Math.floor((clip.start / totalDur) * peaks.length);
+    const i1 = Math.ceil((clip.end / totalDur) * peaks.length);
+    const clipPeaks = peaks.slice(i0, Math.max(i0 + 1, i1));
+    const n = clipPeaks.length;
+
+    for (let x = 0; x < w; x++) {
+      const idx = Math.min(n - 1, Math.floor((x / w) * n));
+      const amp = Math.max(1, (clipPeaks[idx] || 0) * (h * 0.42));
+      cctx.fillRect(x, mid - amp, 1, amp * 2);
+    }
+  });
+}
+
+function updateClipSelection() {
+  document.querySelectorAll(".timeline-clip").forEach((el) => {
+    const idx = Number(el.dataset.clipIdx);
+    el.classList.toggle("selected", state.selectedClipIdx === idx);
+  });
+  updateClipButtons();
+}
+
+function updateClipButtons() {
+  const hasSelection = state.selectedClipIdx !== null && state.selectedClipIdx >= 0 && state.selectedClipIdx < state.clips.length;
+  const delBtn = $("btn-delete-clip");
+  if (delBtn) delBtn.disabled = !hasSelection;
 }
 
 function setPlayhead() {
   const dur = editedDuration() || 1;
-  const pct = Math.min(1, state.editedTime / dur) * 100;
+  const pct = Math.min(1, state.editedTime / dur);
+  const timelineW = getTimelineWidth();
+  const phX = pct * timelineW;
+
   const ph = $("playhead");
   ph.hidden = !hasWords();
-  ph.style.left = `${pct}%`;
-  const fh = $("film-playhead");
-  if (fh) fh.style.left = `${pct}%`;
+  ph.style.left = `${phX.toFixed(1)}px`;
+
+  const timeStr = `${fmt(state.editedTime)} / ${fmt(dur)}`;
+  const tTime = $("transport-time");
+  if (tTime) tTime.textContent = timeStr;
+
+  if (state.playing) {
+    const wrap = $("timeline-scroll-wrap");
+    if (wrap) {
+      const scrollLeft = wrap.scrollLeft;
+      const viewW = wrap.clientWidth;
+      if (phX > scrollLeft + viewW - 40 || phX < scrollLeft) {
+        wrap.scrollLeft = Math.max(0, phX - viewW / 2);
+      }
+    }
+  }
+
   if (state.project?.kind === "video") {
-    $("video-time").textContent = `${fmt(state.editedTime)} / ${fmt(dur)}`;
+    $("video-time").textContent = timeStr;
     const src = editedToSource(state.editedTime);
     const hit = keepWords().find((w) => src >= w.start && src <= w.end);
     $("caption").innerHTML = hit
@@ -314,13 +455,24 @@ async function deleteIds(ids) {
 async function sendChat(text) {
   if (!text.trim()) return;
   if (!state.project?.id) {
-    await createWorkspace();
+    state.project = await api("/api/projects", { method: "POST" });
   }
-  applyProject(await api(`/api/projects/${state.project.id}/agent`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message: text }),
-  }));
+  if (state.project) {
+    if (!Array.isArray(state.project.messages)) state.project.messages = [];
+    state.project.messages.push({ role: "user", text });
+    renderChat();
+  }
+  try {
+    const updated = await api(`/api/projects/${state.project.id}/agent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: text }),
+    });
+    applyProject(updated);
+  } catch (err) {
+    console.error(err);
+    renderChat();
+  }
 }
 
 function tick() {
@@ -358,30 +510,59 @@ function highlightWord(src) {
 }
 
 function setPlayingUi(on) {
-  $("icon-play").hidden = on;
-  $("icon-pause").hidden = !on;
+  const isPlaying = Boolean(on);
+  state.playing = isPlaying;
+
+  const btnPlay = $("btn-play");
+  if (btnPlay) {
+    btnPlay.classList.toggle("is-playing", isPlaying);
+    btnPlay.title = isPlaying ? "Pause" : "Play";
+  }
+
+  const btnPlayInline = $("btn-play-inline");
+  if (btnPlayInline) {
+    btnPlayInline.classList.toggle("is-playing", isPlaying);
+    btnPlayInline.title = isPlaying ? "Pause" : "Play";
+  }
+
+  const btnVideoPlay = $("btn-video-play");
+  if (btnVideoPlay) {
+    btnVideoPlay.classList.toggle("is-playing", isPlaying);
+    btnVideoPlay.title = isPlaying ? "Pause" : "Play";
+  }
 }
 
 function play(fromStart = false) {
   if (!hasWords()) return;
   attachMedia(state.project);
-  if (fromStart) state.editedTime = 0;
+  const dur = editedDuration();
+  if (fromStart || (dur > 0 && state.editedTime >= dur - 0.02)) {
+    state.editedTime = 0;
+  }
   const media = mediaEl();
   try {
     media.currentTime = editedToSource(state.editedTime);
   } catch {}
+  if (state.project?.kind === "video" && videoEl.src) {
+    try {
+      videoEl.currentTime = editedToSource(state.editedTime);
+      videoEl.play().catch(() => {});
+    } catch {}
+  }
   const kick = media.play();
   state.playing = true;
   setPlayingUi(true);
   cancelAnimationFrame(state.raf);
   tick();
-  if (kick && kick.catch) kick.catch(() => pause());
+  if (kick && kick.catch) {
+    kick.catch(() => pause());
+  }
 }
 
 function pause() {
   state.playing = false;
-  audioEl.pause();
-  videoEl.pause();
+  try { audioEl.pause(); } catch {}
+  try { videoEl.pause(); } catch {}
   setPlayingUi(false);
   cancelAnimationFrame(state.raf);
 }
@@ -437,8 +618,15 @@ wordsEl.addEventListener("click", (e) => {
 });
 
 $("btn-play").onclick = () => (state.playing ? pause() : play(false));
-$("btn-play-inline").onclick = () => (state.playing ? pause() : play(true));
-$("btn-video-play").onclick = () => (state.playing ? pause() : play(true));
+$("btn-play-inline").onclick = () => {
+  if (state.playing) {
+    pause();
+  } else {
+    const atEnd = editedDuration() > 0 && state.editedTime >= editedDuration() - 0.05;
+    play(atEnd);
+  }
+};
+$("btn-video-play").onclick = () => (state.playing ? pause() : play(false));
 $("btn-back").onclick = () => seekEdited(state.editedTime - 3);
 $("btn-fwd").onclick = () => seekEdited(state.editedTime + 3);
 
@@ -486,18 +674,293 @@ $("project-name").onclick = async () => {
   }));
 };
 
-$("wave-wrap").addEventListener("click", (e) => {
-  if (!state.project) return;
-  const r = $("wave-wrap").getBoundingClientRect();
-  seekEdited(((e.clientX - r.left) / r.width) * editedDuration());
-});
-$("filmstrip-wrap").addEventListener("click", (e) => {
-  if (!state.project) return;
-  const r = $("filmstrip-wrap").getBoundingClientRect();
-  seekEdited(((e.clientX - r.left) / r.width) * editedDuration());
+async function splitAtPlayhead() {
+  if (!state.project?.id || !hasWords()) return;
+  const src = editedToSource(state.editedTime);
+  try {
+    const updated = await api(`/api/projects/${state.project.id}/split`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ time: src }),
+    });
+    applyProject(updated);
+  } catch (err) {
+    console.error("Split failed:", err);
+  }
+}
+
+async function deleteSelectedClip() {
+  if (state.selectedClipIdx === null || !state.project) return;
+  const clip = state.clips[state.selectedClipIdx];
+  if (!clip) return;
+  await deleteIds(clip.wordIds);
+  state.selectedClipIdx = null;
+  updateClipButtons();
+}
+
+async function reorderClips(fromIdx, toIdx) {
+  if (fromIdx === toIdx || !state.project || !state.clips.length) return;
+  const newClips = [...state.clips];
+  const [moved] = newClips.splice(fromIdx, 1);
+  newClips.splice(toIdx, 0, moved);
+
+  const order = newClips.map((c) => c.wordIds);
+  try {
+    const updated = await api(`/api/projects/${state.project.id}/reorder_clips`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ order }),
+    });
+    state.selectedClipIdx = toIdx;
+    applyProject(updated);
+  } catch (err) {
+    console.error("Reorder failed:", err);
+    renderClips();
+  }
+}
+
+function calculateNewClipIndex(origIdx, deltaSec) {
+  if (!state.clips.length) return origIdx;
+  const dur = editedDuration();
+  if (dur <= 0) return origIdx;
+  
+  let targetTime = 0;
+  for (let i = 0; i < origIdx; i++) {
+    targetTime += state.clips[i].duration;
+  }
+  targetTime += state.clips[origIdx].duration / 2 + deltaSec;
+
+  let acc = 0;
+  for (let i = 0; i < state.clips.length; i++) {
+    const nextAcc = acc + state.clips[i].duration;
+    if (targetTime <= nextAcc) {
+      return i;
+    }
+    acc = nextAcc;
+  }
+  return state.clips.length - 1;
+}
+
+function setZoom(val) {
+  state.zoomLevel = Math.max(1, Math.min(8, Number(val)));
+  const slider = $("zoom-slider");
+  if (slider) slider.value = state.zoomLevel;
+  renderRuler();
+  renderClips();
+  setPlayhead();
+}
+
+function setupTimelineInteractions() {
+  let dragging = null;
+
+  function onMouseDown(e) {
+    if (!state.project || !hasWords()) return;
+
+    const trimHandle = e.target.closest(".clip-trim-handle");
+    if (trimHandle) {
+      e.stopPropagation();
+      e.preventDefault();
+      const isLeft = trimHandle.classList.contains("left");
+      const clipIdx = Number(trimHandle.dataset.clipIdx);
+      const clip = state.clips[clipIdx];
+      if (!clip) return;
+      trimHandle.classList.add("trimming");
+      dragging = {
+        type: isLeft ? "trim-left" : "trim-right",
+        clipIdx,
+        clip,
+        handle: trimHandle,
+        startX: e.clientX,
+      };
+      return;
+    }
+
+    const clipEl = e.target.closest(".timeline-clip");
+    if (clipEl) {
+      e.stopPropagation();
+      const clipIdx = Number(clipEl.dataset.clipIdx);
+      state.selectedClipIdx = clipIdx;
+      updateClipSelection();
+
+      clipEl.classList.add("dragging");
+      dragging = {
+        type: "clip-move",
+        clipIdx,
+        clip: state.clips[clipIdx],
+        clipEl,
+        startX: e.clientX,
+      };
+      return;
+    }
+
+    const container = e.target.closest(".timeline-container");
+    if (container) {
+      e.preventDefault();
+      const content = $("timeline-content");
+      const rect = content.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const timelineW = getTimelineWidth();
+      const pct = Math.max(0, Math.min(1, clickX / timelineW));
+      seekEdited(pct * editedDuration());
+      state.selectedClipIdx = null;
+      updateClipSelection();
+      dragging = {
+        type: "playhead",
+      };
+    }
+  }
+
+  function onMouseMove(e) {
+    if (!dragging || !state.project) return;
+
+    if (dragging.type === "playhead") {
+      const content = $("timeline-content");
+      const rect = content.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const timelineW = getTimelineWidth();
+      const pct = Math.max(0, Math.min(1, clickX / timelineW));
+      seekEdited(pct * editedDuration());
+      return;
+    }
+
+    if (dragging.type === "clip-move") {
+      const deltaX = e.clientX - dragging.startX;
+      dragging.clipEl.style.transform = `translateX(${deltaX}px) scale(1.02)`;
+      return;
+    }
+
+    if (dragging.type === "trim-left" || dragging.type === "trim-right") {
+      const deltaX = e.clientX - dragging.startX;
+      const timelineW = getTimelineWidth();
+      const dur = editedDuration();
+      const deltaSec = (deltaX / timelineW) * dur;
+
+      if (dragging.type === "trim-left") {
+        const firstWord = dragging.clip.words[0];
+        const newStart = Math.max(
+          firstWord.start - 0.5,
+          Math.min(firstWord.end - 0.05, (firstWord.cut_start ?? firstWord.start) + deltaSec)
+        );
+        dragging.newBound = newStart;
+      } else {
+        const lastWord = dragging.clip.words.at(-1);
+        const newEnd = Math.min(
+          lastWord.end + 0.5,
+          Math.max(lastWord.start + 0.05, (lastWord.cut_end ?? lastWord.end) + deltaSec)
+        );
+        dragging.newBound = newEnd;
+      }
+      return;
+    }
+  }
+
+  async function onMouseUp(e) {
+    if (!dragging) return;
+    const cur = dragging;
+    dragging = null;
+
+    if (cur.type === "clip-move") {
+      cur.clipEl.classList.remove("dragging");
+      cur.clipEl.style.transform = "";
+      const deltaX = e.clientX - cur.startX;
+      const timelineW = getTimelineWidth();
+      const dur = editedDuration();
+      const deltaSec = (deltaX / timelineW) * dur;
+
+      if (Math.abs(deltaX) > 25) {
+        const newIdx = calculateNewClipIndex(cur.clipIdx, deltaSec);
+        if (newIdx !== cur.clipIdx && newIdx >= 0 && newIdx < state.clips.length) {
+          await reorderClips(cur.clipIdx, newIdx);
+        }
+      }
+      return;
+    }
+
+    if (cur.type === "trim-left" && cur.newBound !== undefined) {
+      cur.handle.classList.remove("trimming");
+      const firstWord = cur.clip.words[0];
+      try {
+        const updated = await api(`/api/projects/${state.project.id}/bounds`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            updates: [{ id: firstWord.id, cut_start: cur.newBound }],
+          }),
+        });
+        applyProject(updated);
+      } catch (err) {
+        console.error("Trim failed:", err);
+      }
+      return;
+    }
+
+    if (cur.type === "trim-right" && cur.newBound !== undefined) {
+      cur.handle.classList.remove("trimming");
+      const lastWord = cur.clip.words.at(-1);
+      try {
+        const updated = await api(`/api/projects/${state.project.id}/bounds`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            updates: [{ id: lastWord.id, cut_end: cur.newBound }],
+          }),
+        });
+        applyProject(updated);
+      } catch (err) {
+        console.error("Trim failed:", err);
+      }
+      return;
+    }
+  }
+
+  const container = $("timeline-container");
+  if (container) {
+    container.addEventListener("mousedown", onMouseDown);
+  }
+  window.addEventListener("mousemove", onMouseMove);
+  window.addEventListener("mouseup", onMouseUp);
+}
+
+$("btn-split").onclick = () => splitAtPlayhead();
+$("btn-delete-clip").onclick = () => deleteSelectedClip();
+$("btn-add-clip").onclick = () => $("clip-file").click();
+
+$("clip-file").onchange = async () => {
+  const f = $("clip-file").files?.[0];
+  if (!f || !state.project) return;
+  $("clip-file").value = "";
+  document.body.classList.add("busy");
+  try {
+    const fd = new FormData();
+    fd.append("file", f);
+    const res = await fetch(`/api/projects/${state.project.id}/append`, {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Upload failed");
+    }
+    const updated = await res.json();
+    applyProject(updated);
+  } catch (err) {
+    alert("Failed to add clip: " + err.message);
+  } finally {
+    document.body.classList.remove("busy");
+  }
+};
+
+$("btn-zoom-in").onclick = () => setZoom(state.zoomLevel + 0.5);
+$("btn-zoom-out").onclick = () => setZoom(state.zoomLevel - 0.5);
+$("btn-zoom-fit").onclick = () => setZoom(1.0);
+$("zoom-slider").oninput = (e) => setZoom(e.target.value);
+
+window.addEventListener("resize", () => {
+  renderRuler();
+  renderClips();
+  setPlayhead();
 });
 
-window.addEventListener("resize", drawWave);
 document.addEventListener("dragover", (e) => {
   e.preventDefault();
   $("dropzone").classList.add("drag");
@@ -515,6 +978,34 @@ document.addEventListener("drop", (e) => {
 audioEl.addEventListener("timeupdate", () => {
   if (!state.playing) return;
   highlightWord(audioEl.currentTime);
+});
+
+audioEl.addEventListener("ended", () => {
+  pause();
+  state.editedTime = 0;
+  setPlayhead();
+});
+
+window.addEventListener("keydown", (e) => {
+  if (["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName)) return;
+
+  if (e.code === "Space") {
+    e.preventDefault();
+    if (document.activeElement && document.activeElement.tagName === "BUTTON") {
+      document.activeElement.blur();
+    }
+    if (hasWords()) {
+      state.playing ? pause() : play(false);
+    }
+  } else if (e.key === "s" || e.key === "S") {
+    e.preventDefault();
+    splitAtPlayhead();
+  } else if (e.key === "Delete" || e.key === "Backspace") {
+    if (state.selectedClipIdx !== null) {
+      e.preventDefault();
+      deleteSelectedClip();
+    }
+  }
 });
 
 const SIDEBAR_MIN = 260;
@@ -595,11 +1086,16 @@ async function refreshHistory() {
             ? `${p.kind || "audio"} · ${p.word_count} words · ${formatWhen(p.updated_at)}`
             : `No audio yet · ${formatWhen(p.updated_at)}`;
           const extra = p.preview ? `<span class="h-meta">${escapeHtml(p.preview)}</span>` : "";
-          return `<button type="button" class="history-item${p.id === current ? " active" : ""}" data-id="${p.id}">
-            <span class="h-name">${escapeHtml(p.name)}</span>
-            <span class="h-meta">${escapeHtml(meta)}</span>
-            ${extra}
-          </button>`;
+          return `<div class="history-item-wrap${p.id === current ? " active" : ""}">
+            <button type="button" class="history-item" data-id="${p.id}">
+              <span class="h-name">${escapeHtml(p.name)}</span>
+              <span class="h-meta">${escapeHtml(meta)}</span>
+              ${extra}
+            </button>
+            <button type="button" class="history-del-btn" data-del-id="${p.id}" title="Delete chat">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+          </div>`;
         })
         .join("")
     : `<p class="h-meta" style="padding:8px">No workspaces yet.</p>`;
@@ -607,13 +1103,13 @@ async function refreshHistory() {
 
 async function createWorkspace() {
   pause();
-  const p = await api("/api/projects", { method: "POST" });
+  state.project = null;
   audioEl.removeAttribute("src");
+  videoEl.removeAttribute("src");
   state.editedTime = 0;
-  applyProject(p);
+  applyProject(null);
   setStageMode("empty");
   setHistoryOpen(false);
-  return p;
 }
 
 async function openWorkspace(id) {
@@ -640,7 +1136,18 @@ $("btn-history").onclick = async () => {
 $("btn-new").onclick = () => createWorkspace();
 $("btn-history-new").onclick = () => createWorkspace();
 
-$("history-list").addEventListener("click", (e) => {
+$("history-list").addEventListener("click", async (e) => {
+  const del = e.target.closest("[data-del-id]");
+  if (del) {
+    if (confirm("Are you sure you want to delete this chat?")) {
+      await api(`/api/projects/${del.dataset.delId}`, { method: "DELETE" });
+      if (state.project?.id === del.dataset.delId) {
+        createWorkspace();
+      }
+      refreshHistory();
+    }
+    return;
+  }
   const item = e.target.closest("[data-id]");
   if (item) openWorkspace(item.dataset.id);
 });
@@ -651,5 +1158,6 @@ function boot() {
   setHistoryOpen(false);
   setStageMode("empty");
   renderChat();
+  setupTimelineInteractions();
 }
 boot();
