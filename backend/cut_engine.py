@@ -180,7 +180,8 @@ def keep_ranges(words: list[dict], deleted: Iterable[int]) -> list[tuple[float, 
     ranges: list[tuple[float, float]] = []
     cur: tuple[float, float] | None = None
     for i, w in enumerate(words):
-        if i in gone:
+        wid = int(w.get("id", i))
+        if wid in gone:
             if cur:
                 ranges.append(cur)
                 cur = None
@@ -189,8 +190,11 @@ def keep_ranges(words: list[dict], deleted: Iterable[int]) -> list[tuple[float, 
         e = float(w.get("cut_end", w["end"]))
         if cur is None:
             cur = (s, e)
-        else:
+        elif abs(s - cur[1]) < 0.08:
             cur = (cur[0], e)
+        else:
+            ranges.append(cur)
+            cur = (s, e)
     if cur:
         ranges.append(cur)
     return [(round(a, 4), round(b, 4)) for a, b in ranges if b - a > 0.02]

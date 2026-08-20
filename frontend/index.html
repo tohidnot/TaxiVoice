@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=30" />
+  <link rel="stylesheet" href="styles.css?v=31" />
 </head>
 <body>
   <div id="app" class="shell">
@@ -140,15 +140,15 @@
       </section>
 
       <footer class="transport editor-only" hidden>
+        <div id="retranscribe-bar" class="retranscribe-bar" hidden>
+          <span class="retranscribe-msg">Timeline was edited. Re-transcribe so the words above match this cut.</span>
+          <div class="retranscribe-actions">
+            <button type="button" id="btn-retranscribe-dismiss" class="text-btn">Not now</button>
+            <button type="button" id="btn-retranscribe" class="retranscribe-btn">Re-transcribe</button>
+          </div>
+        </div>
         <div class="transport-controls">
           <div class="transport-left">
-            <button id="btn-add-clip" class="icon-btn highlight-btn" title="Add More Clips" type="button">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="12" y1="5" x2="12" y2="19"/>
-                <line x1="5" y1="12" x2="19" y2="12"/>
-              </svg>
-              <span class="btn-text">Add Clip</span>
-            </button>
             <button id="btn-split" class="icon-btn" title="Split at playhead (S)" type="button">
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="6" cy="6" r="3"/>
@@ -161,6 +161,12 @@
             <button id="btn-delete-clip" class="icon-btn" title="Delete selected clip (Del / Backspace)" type="button" disabled>
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              </svg>
+            </button>
+            <button id="btn-add-clip" class="icon-btn" title="Add clip" type="button">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19"/>
+                <line x1="5" y1="12" x2="19" y2="12"/>
               </svg>
             </button>
           </div>
@@ -203,15 +209,12 @@
           <div class="timeline-scroll-wrap" id="timeline-scroll-wrap">
             <div class="timeline-content" id="timeline-content">
               <div class="ruler" id="ruler"></div>
-              
               <div id="filmstrip-wrap" class="filmstrip-wrap" hidden>
                 <div id="filmstrip" class="filmstrip"></div>
               </div>
-
               <div id="track-lane" class="track-lane">
                 <div id="timeline-clips" class="timeline-clips"></div>
               </div>
-
               <div id="playhead" class="playhead" hidden>
                 <div class="playhead-knob"></div>
               </div>
@@ -225,6 +228,6 @@
   <input id="file" type="file" accept="audio/*,video/*,.mp3,.wav,.m4a,.mp4,.mov,.mkv" hidden />
   <input id="clip-file" type="file" accept="audio/*,video/*,.mp3,.wav,.m4a,.mp4,.mov,.mkv" hidden />
   <audio id="audio" preload="auto"></audio>
-  <script src="app.js?v=24"></script>
+  <script src="app.js?v=25"></script>
 </body>
 </html>

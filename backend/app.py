@@ -81,6 +81,8 @@ def _empty_session(name: str = "New chat") -> dict:
         "redo": [],
         "peaks": [],
         "thumbs": [],
+        "clips": [],
+        "needs_retranscribe": False,
         "messages": [
             {
                 "role": "assistant",
@@ -129,10 +131,118 @@ def _write_wav(path: Path, pcm: np.ndarray, sr: int) -> None:
         w.writeframes(float_to_pcm16(pcm))
 
 
-def _public(meta: dict) -> dict:
-    words = meta["words"]
+def _new_clip_id() -> str:
+    return "c" + uuid.uuid4().hex[:8]
+
+
+def _push_undo(meta: dict) -> None:
+    meta.setdefault("undo", []).append({
+        "deleted": list(meta.get("deleted") or []),
+        "words": copy.deepcopy(meta.get("words") or []),
+        "clips": copy.deepcopy(meta.get("clips") or []),
+        "needs_retranscribe": bool(meta.get("needs_retranscribe")),
+    })
+    meta["redo"] = []
+
+
+def _restore_snapshot(meta: dict, snap) -> None:
+    if isinstance(snap, dict):
+        meta["deleted"] = snap.get("deleted", [])
+        if "words" in snap:
+            meta["words"] = snap["words"]
+        if "clips" in snap:
+            meta["clips"] = snap["clips"]
+        if "needs_retranscribe" in snap:
+            meta["needs_retranscribe"] = bool(snap["needs_retranscribe"])
+    elif isinstance(snap, list):
+        meta["deleted"] = snap
+
+
+def _word_span(w: dict) -> tuple[float, float]:
+    return float(w.get("cut_start", w["start"])), float(w.get("cut_end", w["end"]))
+
+
+def _clips_from_ranges(ranges: list[tuple[float, float]]) -> list[dict]:
+    return [
+        {
+            "id": _new_clip_id(),
+            "in": round(a, 4),
+            "out": round(b, 4),
+            "origin_in": round(a, 4),
+            "origin_out": round(b, 4),
+        }
+        for a, b in ranges
+        if b - a > 0.02
+    ]
+
+
+def _ensure_clips(meta: dict) -> list[dict]:
+    clips = list(meta.get("clips") or [])
+    if clips:
+        return clips
+    words = meta.get("words") or []
     deleted = set(meta.get("deleted") or [])
-    ranges = keep_ranges(words, deleted)
+    clips = _clips_from_ranges(keep_ranges(words, deleted))
+    meta["clips"] = clips
+    return clips
+
+
+def _clip_ranges(meta: dict) -> list[tuple[float, float]]:
+    clips = meta.get("clips") or []
+    if clips:
+        return [
+            (float(c["in"]), float(c["out"]))
+            for c in clips
+            if float(c["out"]) - float(c["in"]) > 0.02
+        ]
+    return keep_ranges(meta.get("words") or [], meta.get("deleted") or [])
+
+
+def _delete_word_ids(meta: dict, ids: list[int]) -> None:
+    deleted = set(meta.get("deleted") or [])
+    by_id = {int(w["id"]): w for w in (meta.get("words") or [])}
+    clips = _ensure_clips(meta)
+    for wid in ids:
+        deleted.add(int(wid))
+        w = by_id.get(int(wid))
+        if not w:
+            continue
+        s, e = _word_span(w)
+        clips = _subtract_from_clips(clips, s, e)
+    meta["deleted"] = sorted(deleted)
+    meta["clips"] = clips
+
+
+def _subtract_from_clips(clips: list[dict], a: float, b: float) -> list[dict]:
+    new = []
+    for c in clips:
+        cin, cout = float(c["in"]), float(c["out"])
+        if b <= cin + 0.005 or a >= cout - 0.005:
+            new.append(c)
+            continue
+        if a - cin > 0.04:
+            left = dict(c)
+            left["out"] = round(a, 4)
+            new.append(left)
+        if cout - b > 0.04:
+            right = dict(c)
+            right["id"] = _new_clip_id()
+            right["in"] = round(b, 4)
+            new.append(right)
+    return new
+
+
+def _public(meta: dict) -> dict:
+    words = meta.get("words") or []
+    deleted = set(meta.get("deleted") or [])
+    clips = list(meta.get("clips") or [])
+    if not clips:
+        clips = _clips_from_ranges(keep_ranges(words, deleted))
+    ranges = [
+        (float(c["in"]), float(c["out"]))
+        for c in clips
+        if float(c["out"]) - float(c["in"]) > 0.02
+    ] or keep_ranges(words, deleted)
     edited = sum(b - a for a, b in ranges)
     return {
         "id": meta["id"],
@@ -147,6 +257,8 @@ def _public(meta: dict) -> dict:
             for w in words
         ],
         "keep_ranges": ranges,
+        "clips": clips,
+        "needs_retranscribe": bool(meta.get("needs_retranscribe")),
         "peaks": meta.get("peaks") or [],
         "thumbs": meta.get("thumbs") or [],
         "messages": meta.get("messages") or [],
@@ -271,6 +383,16 @@ async def import_media(file: UploadFile = File(...), session_id: str | None = Fo
         "redo": [],
         "peaks": peaks,
         "thumbs": thumbs,
+        "clips": [
+            {
+                "id": _new_clip_id(),
+                "in": 0.0,
+                "out": duration,
+                "origin_in": 0.0,
+                "origin_out": duration,
+            }
+        ] if duration > 0.02 else [],
+        "needs_retranscribe": False,
         "messages": prior_msgs,
         "created_at": (existing or {}).get("created_at"),
     }
@@ -300,11 +422,22 @@ class TrimBody(BaseModel):
 
 
 class ReorderBody(BaseModel):
-    order: list[list[int]]
+    order: list[list[int]] | None = None
+    clip_ids: list[str] | None = None
 
 
 class DuplicateBody(BaseModel):
     ids: list[int]
+
+
+class ClipTrimBody(BaseModel):
+    id: str
+    in_point: float | None = None
+    out_point: float | None = None
+
+
+class ClipIdBody(BaseModel):
+    id: str
 
 
 @app.get("/api/projects/latest")
@@ -317,19 +450,21 @@ def latest_project():
 
 @app.get("/api/projects/{pid}")
 def get_project(pid: str):
-    return _public(_load(pid))
+    meta = _load(pid)
+    if (meta.get("words") or []) and not (meta.get("clips") or []):
+        _ensure_clips(meta)
+        _save(meta)
+    return _public(meta)
 
 
 @app.post("/api/projects/{pid}/delete")
 def delete_words(pid: str, body: IdsBody):
     meta = _load(pid)
-    deleted = set(meta.get("deleted") or [])
-    before = set(deleted)
-    deleted.update(int(i) for i in body.ids)
-    if deleted != before:
-        meta.setdefault("undo", []).append(meta.get("deleted") or [])
-        meta["redo"] = []
-        meta["deleted"] = sorted(deleted)
+    before = set(meta.get("deleted") or [])
+    ids = [int(i) for i in body.ids]
+    if any(i not in before for i in ids):
+        _push_undo(meta)
+        _delete_word_ids(meta, ids)
         _save(meta)
     return _public(meta)
 
@@ -358,13 +493,10 @@ def undo(pid: str):
     meta.setdefault("redo", []).append({
         "deleted": list(meta.get("deleted") or []),
         "words": copy.deepcopy(meta.get("words") or []),
+        "clips": copy.deepcopy(meta.get("clips") or []),
+        "needs_retranscribe": bool(meta.get("needs_retranscribe")),
     })
-    if isinstance(prev, dict):
-        meta["deleted"] = prev.get("deleted", [])
-        if "words" in prev:
-            meta["words"] = prev["words"]
-    elif isinstance(prev, list):
-        meta["deleted"] = prev
+    _restore_snapshot(meta, prev)
     meta["undo"] = undo_stack
     _save(meta)
     return _public(meta)
@@ -380,13 +512,10 @@ def redo(pid: str):
     meta.setdefault("undo", []).append({
         "deleted": list(meta.get("deleted") or []),
         "words": copy.deepcopy(meta.get("words") or []),
+        "clips": copy.deepcopy(meta.get("clips") or []),
+        "needs_retranscribe": bool(meta.get("needs_retranscribe")),
     })
-    if isinstance(nxt, dict):
-        meta["deleted"] = nxt.get("deleted", [])
-        if "words" in nxt:
-            meta["words"] = nxt["words"]
-    elif isinstance(nxt, list):
-        meta["deleted"] = nxt
+    _restore_snapshot(meta, nxt)
     meta["redo"] = redo_stack
     _save(meta)
     return _public(meta)
@@ -424,57 +553,29 @@ def update_bounds(pid: str, body: BoundsBody):
 def split_at_time(pid: str, body: SplitBody):
     meta = _load(pid)
     t = round(float(body.time), 4)
-    words = meta.get("words") or []
-    if not words:
-        raise HTTPException(400, "no words to split")
+    clips = _ensure_clips(meta)
+    target_i = next(
+        (
+            i
+            for i, c in enumerate(clips)
+            if float(c["in"]) + 0.05 < t < float(c["out"]) - 0.05
+        ),
+        -1,
+    )
+    if target_i < 0:
+        raise HTTPException(400, "playhead is not inside a clip")
 
-    meta.setdefault("undo", []).append({
-        "deleted": list(meta.get("deleted") or []),
-        "words": copy.deepcopy(words),
-    })
-    meta["redo"] = []
-
-    # Find the word to split
-    idx = -1
-    for i, w in enumerate(words):
-        s = float(w.get("cut_start", w["start"]))
-        e = float(w.get("cut_end", w["end"]))
-        if s <= t <= e:
-            idx = i
-            break
-        elif i + 1 < len(words):
-            next_s = float(words[i+1].get("cut_start", words[i+1]["start"]))
-            if e <= t <= next_s:
-                w["cut_end"] = t
-                words[i+1]["cut_start"] = t
-                _save(meta)
-                return _public(meta)
-
-    if idx == -1:
-        if t < float(words[0].get("cut_start", words[0]["start"])):
-            idx = 0
-        else:
-            idx = len(words) - 1
-
-    target = words[idx]
-    s = float(target.get("cut_start", target["start"]))
-    e = float(target.get("cut_end", target["end"]))
-    split_t = max(s + 0.02, min(e - 0.02, t))
-
-    max_id = max((int(w["id"]) for w in words), default=0)
-    new_id = max_id + 1
-
-    w1 = dict(target)
-    w1["end"] = round(split_t, 4)
-    w1["cut_end"] = round(split_t, 4)
-
-    w2 = dict(target)
-    w2["id"] = new_id
-    w2["start"] = round(split_t, 4)
-    w2["cut_start"] = round(split_t, 4)
-
-    words[idx : idx + 1] = [w1, w2]
-    meta["words"] = words
+    _push_undo(meta)
+    c = dict(clips[target_i])
+    left = dict(c)
+    left["out"] = t
+    left["origin_out"] = min(float(c.get("origin_out", c["out"])), t)
+    right = dict(c)
+    right["id"] = _new_clip_id()
+    right["in"] = t
+    right["origin_in"] = max(float(c.get("origin_in", c["in"])), t)
+    clips[target_i : target_i + 1] = [left, right]
+    meta["clips"] = clips
     _save(meta)
     return _public(meta)
 
@@ -577,11 +678,25 @@ async def append_media(pid: str, file: UploadFile = File(...)):
     meta.setdefault("undo", []).append({
         "deleted": list(meta.get("deleted") or []),
         "words": copy.deepcopy(existing_words),
+        "clips": copy.deepcopy(meta.get("clips") or []),
+        "needs_retranscribe": bool(meta.get("needs_retranscribe")),
     })
     meta["redo"] = []
     meta["words"] = all_words
     meta["peaks"] = waveform_peaks(combined_pcm, 1600)
     meta["duration"] = round(len(combined_pcm) / 44100, 3)
+    clips = list(meta.get("clips") or [])
+    if not clips:
+        clips = _clips_from_ranges(keep_ranges(existing_words, meta.get("deleted") or []))
+    new_end = float(meta["duration"])
+    clips.append({
+        "id": _new_clip_id(),
+        "in": round(prior_duration, 4),
+        "out": round(new_end, 4),
+        "origin_in": round(prior_duration, 4),
+        "origin_out": round(new_end, 4),
+    })
+    meta["clips"] = clips
 
     if is_vid:
         tdir = dest / "thumbs"
@@ -617,25 +732,177 @@ async def append_media(pid: str, file: UploadFile = File(...)):
 @app.post("/api/projects/{pid}/reorder_clips")
 def reorder_clips(pid: str, body: ReorderBody):
     meta = _load(pid)
-    words = meta.get("words") or []
-    word_map = {int(w["id"]): w for w in words}
-    reordered = []
-    seen_ids = set()
-    for clip in body.order:
-        for wid in clip:
-            if int(wid) in word_map and int(wid) not in seen_ids:
-                reordered.append(word_map[int(wid)])
-                seen_ids.add(int(wid))
-    for w in words:
-        if int(w["id"]) not in seen_ids:
-            reordered.append(w)
+    clips = _ensure_clips(meta)
+    _push_undo(meta)
+    if body.clip_ids:
+        by_id = {c["id"]: c for c in clips}
+        new_clips = [by_id[i] for i in body.clip_ids if i in by_id]
+        for c in clips:
+            if c["id"] not in body.clip_ids:
+                new_clips.append(c)
+        meta["clips"] = new_clips
+        clips = new_clips
+    elif body.order:
+        words = meta.get("words") or []
+        word_map = {int(w["id"]): w for w in words}
+        reordered = []
+        seen_ids = set()
+        for clip in body.order:
+            for wid in clip:
+                if int(wid) in word_map and int(wid) not in seen_ids:
+                    reordered.append(word_map[int(wid)])
+                    seen_ids.add(int(wid))
+        for w in words:
+            if int(w["id"]) not in seen_ids:
+                reordered.append(w)
+        meta["words"] = reordered
+    meta["needs_retranscribe"] = True
+    _save(meta)
+    return _public(meta)
 
-    meta.setdefault("undo", []).append({
-        "deleted": list(meta.get("deleted") or []),
-        "words": copy.deepcopy(words),
-    })
+
+@app.post("/api/projects/{pid}/clips/trim")
+def trim_clip(pid: str, body: ClipTrimBody):
+    meta = _load(pid)
+    clips = _ensure_clips(meta)
+    idx = next((i for i, c in enumerate(clips) if c["id"] == body.id), -1)
+    if idx < 0:
+        raise HTTPException(404, "clip not found")
+    c = dict(clips[idx])
+    old_in, old_out = float(c["in"]), float(c["out"])
+    origin_in = float(c.get("origin_in", old_in))
+    origin_out = float(c.get("origin_out", old_out))
+    new_in = old_in if body.in_point is None else float(body.in_point)
+    new_out = old_out if body.out_point is None else float(body.out_point)
+    new_in = max(origin_in, new_in)
+    new_out = min(origin_out, new_out)
+    for j, other in enumerate(clips):
+        if j == idx:
+            continue
+        oi, oo = float(other["in"]), float(other["out"])
+        if oo <= new_in or oi >= new_out:
+            continue
+        if oi < old_in:
+            new_in = max(new_in, oo)
+        else:
+            new_out = min(new_out, oi)
+    if new_out - new_in < 0.08:
+        raise HTTPException(400, "clip too short")
+
+    _push_undo(meta)
+    words = meta.get("words") or []
+    deleted = set(meta.get("deleted") or [])
+
+    if new_in > old_in + 0.001:
+        for w in words:
+            s, e = _word_span(w)
+            if e <= old_in + 0.005 or s >= new_in - 0.005:
+                continue
+            if e <= new_in + 0.02:
+                deleted.add(int(w["id"]))
+            else:
+                w["cut_start"] = round(new_in, 4)
+                deleted.discard(int(w["id"]))
+    elif new_in < old_in - 0.001:
+        for w in words:
+            orig_s, orig_e = float(w["start"]), float(w["end"])
+            if orig_e <= new_in + 0.005 or orig_s >= old_in - 0.005:
+                continue
+            deleted.discard(int(w["id"]))
+            w["cut_start"] = round(max(orig_s, new_in), 4)
+            w["cut_end"] = round(min(float(w.get("cut_end", orig_e)), orig_e), 4)
+
+    if new_out < old_out - 0.001:
+        for w in words:
+            s, e = _word_span(w)
+            if e <= new_out + 0.005 or s >= old_out - 0.005:
+                continue
+            if s >= new_out - 0.02:
+                deleted.add(int(w["id"]))
+            else:
+                w["cut_end"] = round(new_out, 4)
+                deleted.discard(int(w["id"]))
+    elif new_out > old_out + 0.001:
+        for w in words:
+            orig_s, orig_e = float(w["start"]), float(w["end"])
+            if orig_e <= old_out + 0.005 or orig_s >= new_out - 0.005:
+                continue
+            deleted.discard(int(w["id"]))
+            w["cut_start"] = round(max(float(w.get("cut_start", orig_s)), orig_s), 4)
+            w["cut_end"] = round(min(orig_e, new_out), 4)
+
+    c["in"] = round(new_in, 4)
+    c["out"] = round(new_out, 4)
+    clips[idx] = c
+    meta["clips"] = clips
+    meta["deleted"] = sorted(deleted)
+    meta["needs_retranscribe"] = True
+    _save(meta)
+    return _public(meta)
+
+
+@app.post("/api/projects/{pid}/clips/delete")
+def delete_clip(pid: str, body: ClipIdBody):
+    meta = _load(pid)
+    clips = _ensure_clips(meta)
+    clip = next((c for c in clips if c["id"] == body.id), None)
+    if not clip:
+        raise HTTPException(404, "clip not found")
+    _push_undo(meta)
+    cin, cout = float(clip["in"]), float(clip["out"])
+    deleted = set(meta.get("deleted") or [])
+    for w in meta.get("words") or []:
+        s, e = _word_span(w)
+        if e > cin and s < cout:
+            deleted.add(int(w["id"]))
+    meta["deleted"] = sorted(deleted)
+    meta["clips"] = [c for c in clips if c["id"] != body.id]
+    meta["needs_retranscribe"] = True
+    _save(meta)
+    return _public(meta)
+
+
+@app.post("/api/projects/{pid}/retranscribe")
+def retranscribe(pid: str):
+    if not have_parakeet():
+        raise HTTPException(500, "Parakeet v3 is not installed on this Mac")
+    meta = _load(pid)
+    dest = _proj_dir(pid)
+    wav44 = Path(meta.get("wav44") or "")
+    if not wav44.is_file():
+        raise HTTPException(400, "no audio to re-transcribe")
+    pcm, sr = _read_wav(wav44)
+    ranges = _clip_ranges(meta)
+    if not ranges:
+        raise HTTPException(400, "nothing left to re-transcribe")
+    out_pcm = render_keep_ranges(pcm, sr, ranges)
+    _write_wav(wav44, out_pcm, sr)
+    wav16 = dest / "audio.16k.wav"
+    to_wav(wav44, wav16, 16000)
+    asr = transcribe_wav(wav16)
+    words = refine_words(asr.get("words") or [], out_pcm, sr)
+    duration = round(len(out_pcm) / float(sr), 3)
+    meta["words"] = words
+    meta["deleted"] = []
+    meta["duration"] = duration
+    meta["peaks"] = waveform_peaks(out_pcm, 1600)
+    meta["model"] = asr.get("model")
+    meta["clips"] = [
+        {
+            "id": _new_clip_id(),
+            "in": 0.0,
+            "out": duration,
+            "origin_in": 0.0,
+            "origin_out": duration,
+        }
+    ] if duration > 0.02 else []
+    meta["needs_retranscribe"] = False
+    meta["undo"] = []
     meta["redo"] = []
-    meta["words"] = reordered
+    meta.setdefault("messages", []).append({
+        "role": "assistant",
+        "text": f"Re-transcribed {len(words)} words from the current timeline.",
+    })
     _save(meta)
     return _public(meta)
 
@@ -677,10 +944,8 @@ def agent_chat(pid: str, body: ChatBody):
     result = plan(body.message, meta["words"], deleted)
     new_ids = [i for i in result["delete_ids"] if i not in deleted]
     if new_ids:
-        meta.setdefault("undo", []).append(meta.get("deleted") or [])
-        meta["redo"] = []
-        deleted.update(new_ids)
-        meta["deleted"] = sorted(deleted)
+        _push_undo(meta)
+        _delete_word_ids(meta, new_ids)
     meta["messages"].append({"role": "assistant", "text": result["reply"]})
     _save(meta)
     return _public(meta)
@@ -713,7 +978,7 @@ def thumb(pid: str, name: str):
 def export_media(pid: str):
     meta = _load(pid)
     pcm, sr = _read_wav(Path(meta["wav44"]))
-    ranges = keep_ranges(meta["words"], meta.get("deleted") or [])
+    ranges = _clip_ranges(meta) or keep_ranges(meta["words"], meta.get("deleted") or [])
     out_pcm = render_keep_ranges(pcm, sr, ranges)
     dest = _proj_dir(pid)
     wav_out = dest / "edited.wav"
