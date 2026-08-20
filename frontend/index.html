@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=31" />
+  <link rel="stylesheet" href="styles.css?v=32" />
 </head>
 <body>
   <div id="app" class="shell">
@@ -149,6 +149,13 @@
         </div>
         <div class="transport-controls">
           <div class="transport-left">
+            <button id="btn-undo-tl" class="icon-btn" title="Undo (⌘Z)" type="button" disabled>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-4"/></svg>
+            </button>
+            <button id="btn-redo-tl" class="icon-btn" title="Redo (⌘⇧Z)" type="button" disabled>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h4"/></svg>
+            </button>
+            <span class="tool-divider" aria-hidden="true"></span>
             <button id="btn-split" class="icon-btn" title="Split at playhead (S)" type="button">
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="6" cy="6" r="3"/>
@@ -161,6 +168,18 @@
             <button id="btn-delete-clip" class="icon-btn" title="Delete selected clip (Del / Backspace)" type="button" disabled>
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              </svg>
+            </button>
+            <button id="btn-copy-clip" class="icon-btn" title="Copy clip (⌘C)" type="button" disabled>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+            </button>
+            <button id="btn-paste-clip" class="icon-btn" title="Paste clip (⌘V)" type="button" disabled>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+                <rect x="8" y="2" width="8" height="4" rx="1"/>
               </svg>
             </button>
             <button id="btn-add-clip" class="icon-btn" title="Add clip" type="button">
@@ -228,6 +247,6 @@
   <input id="file" type="file" accept="audio/*,video/*,.mp3,.wav,.m4a,.mp4,.mov,.mkv" hidden />
   <input id="clip-file" type="file" accept="audio/*,video/*,.mp3,.wav,.m4a,.mp4,.mov,.mkv" hidden />
   <audio id="audio" preload="auto"></audio>
-  <script src="app.js?v=25"></script>
+  <script src="app.js?v=26"></script>
 </body>
 </html>

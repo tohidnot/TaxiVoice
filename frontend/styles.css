@@ -672,7 +672,13 @@ button:focus-visible {
 .transport-left {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
+}
+.tool-divider {
+  width: 1px;
+  height: 18px;
+  background: #e4e4e8;
+  margin: 0 4px;
 }
 .transport-right {
   display: flex;
@@ -965,6 +971,27 @@ button:focus-visible {
   flex: 1;
   object-fit: cover;
   border-radius: 0;
+}
+
+.clip-add-end {
+  position: absolute;
+  top: 10px;
+  height: 76px;
+  width: 76px;
+  border: 1.5px dashed #c8c8ce;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #8a8a90;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  z-index: 3;
+  padding: 0;
+}
+.clip-add-end:hover {
+  border-color: var(--orange);
+  color: var(--orange);
+  background: #fff;
 }
 
 .busy { opacity: 0.6; pointer-events: none; }

@@ -136,12 +136,15 @@ def _new_clip_id() -> str:
 
 
 def _push_undo(meta: dict) -> None:
-    meta.setdefault("undo", []).append({
+    stack = meta.setdefault("undo", [])
+    stack.append({
         "deleted": list(meta.get("deleted") or []),
         "words": copy.deepcopy(meta.get("words") or []),
         "clips": copy.deepcopy(meta.get("clips") or []),
         "needs_retranscribe": bool(meta.get("needs_retranscribe")),
     })
+    if len(stack) > 60:
+        del stack[:-60]
     meta["redo"] = []
 
 
@@ -152,24 +155,38 @@ def _restore_snapshot(meta: dict, snap) -> None:
             meta["words"] = snap["words"]
         if "clips" in snap:
             meta["clips"] = snap["clips"]
+        else:
+            meta["clips"] = _clips_from_ranges(
+                keep_ranges(meta.get("words") or [], meta.get("deleted") or []),
+                _source_duration(meta),
+            )
         if "needs_retranscribe" in snap:
             meta["needs_retranscribe"] = bool(snap["needs_retranscribe"])
     elif isinstance(snap, list):
         meta["deleted"] = snap
+        meta["clips"] = _clips_from_ranges(
+            keep_ranges(meta.get("words") or [], meta.get("deleted") or []),
+            _source_duration(meta),
+        )
 
 
 def _word_span(w: dict) -> tuple[float, float]:
     return float(w.get("cut_start", w["start"])), float(w.get("cut_end", w["end"]))
 
 
-def _clips_from_ranges(ranges: list[tuple[float, float]]) -> list[dict]:
+def _source_duration(meta: dict) -> float:
+    return max(0.0, float(meta.get("duration") or 0))
+
+
+def _clips_from_ranges(ranges: list[tuple[float, float]], duration: float = 0.0) -> list[dict]:
+    dur = max(0.0, float(duration or 0))
     return [
         {
             "id": _new_clip_id(),
             "in": round(a, 4),
             "out": round(b, 4),
-            "origin_in": round(a, 4),
-            "origin_out": round(b, 4),
+            "origin_in": 0.0,
+            "origin_out": round(dur if dur > 0 else b, 4),
         }
         for a, b in ranges
         if b - a > 0.02
@@ -182,7 +199,7 @@ def _ensure_clips(meta: dict) -> list[dict]:
         return clips
     words = meta.get("words") or []
     deleted = set(meta.get("deleted") or [])
-    clips = _clips_from_ranges(keep_ranges(words, deleted))
+    clips = _clips_from_ranges(keep_ranges(words, deleted), _source_duration(meta))
     meta["clips"] = clips
     return clips
 
@@ -237,7 +254,7 @@ def _public(meta: dict) -> dict:
     deleted = set(meta.get("deleted") or [])
     clips = list(meta.get("clips") or [])
     if not clips:
-        clips = _clips_from_ranges(keep_ranges(words, deleted))
+        clips = _clips_from_ranges(keep_ranges(words, deleted), _source_duration(meta))
     ranges = [
         (float(c["in"]), float(c["out"]))
         for c in clips
@@ -440,6 +457,12 @@ class ClipIdBody(BaseModel):
     id: str
 
 
+class ClipPasteBody(BaseModel):
+    in_point: float
+    out_point: float
+    after_id: str | None = None
+
+
 @app.get("/api/projects/latest")
 def latest_project():
     files = sorted(DATA.glob("*/project.json"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -476,8 +499,7 @@ def restore_words(pid: str, body: IdsBody):
     before = set(deleted)
     deleted.difference_update(int(i) for i in body.ids)
     if deleted != before:
-        meta.setdefault("undo", []).append(meta.get("deleted") or [])
-        meta["redo"] = []
+        _push_undo(meta)
         meta["deleted"] = sorted(deleted)
         _save(meta)
     return _public(meta)
@@ -526,26 +548,23 @@ def update_bounds(pid: str, body: BoundsBody):
     meta = _load(pid)
     words = meta.get("words") or []
     by_id = {int(w["id"]): w for w in words}
-    changed = False
+    pending = []
     for item in body.updates:
         w = by_id.get(int(item.get("id", -1)))
         if not w:
             continue
+        pending.append((w, item))
+    if not pending:
+        return _public(meta)
+    _push_undo(meta)
+    for w, item in pending:
         if "cut_start" in item and item["cut_start"] is not None:
             w["cut_start"] = round(float(item["cut_start"]), 4)
-            changed = True
         if "cut_end" in item and item["cut_end"] is not None:
             w["cut_end"] = round(float(item["cut_end"]), 4)
-            changed = True
         if w.get("cut_end", w["end"]) < w.get("cut_start", w["start"]) + 0.02:
             w["cut_end"] = round(w.get("cut_start", w["start"]) + 0.02, 4)
-    if changed:
-        meta.setdefault("undo", []).append({
-            "deleted": list(meta.get("deleted") or []),
-            "words": copy.deepcopy(words),
-        })
-        meta["redo"] = []
-        _save(meta)
+    _save(meta)
     return _public(meta)
 
 
@@ -567,13 +586,16 @@ def split_at_time(pid: str, body: SplitBody):
 
     _push_undo(meta)
     c = dict(clips[target_i])
+    source_dur = _source_duration(meta)
     left = dict(c)
     left["out"] = t
-    left["origin_out"] = min(float(c.get("origin_out", c["out"])), t)
+    left["origin_in"] = 0.0
+    left["origin_out"] = source_dur
     right = dict(c)
     right["id"] = _new_clip_id()
     right["in"] = t
-    right["origin_in"] = max(float(c.get("origin_in", c["in"])), t)
+    right["origin_in"] = 0.0
+    right["origin_out"] = source_dur
     clips[target_i : target_i + 1] = [left, right]
     meta["clips"] = clips
     _save(meta)
@@ -592,10 +614,7 @@ def trim_range(pid: str, body: TrimBody):
     if not words:
         raise HTTPException(400, "no words to trim")
 
-    meta.setdefault("undo", []).append({
-        "deleted": list(meta.get("deleted") or []),
-        "words": copy.deepcopy(words),
-    })
+    _push_undo(meta)
     meta["redo"] = []
 
     deleted = set(meta.get("deleted") or [])
@@ -687,13 +706,16 @@ async def append_media(pid: str, file: UploadFile = File(...)):
     meta["duration"] = round(len(combined_pcm) / 44100, 3)
     clips = list(meta.get("clips") or [])
     if not clips:
-        clips = _clips_from_ranges(keep_ranges(existing_words, meta.get("deleted") or []))
+        clips = _clips_from_ranges(
+            keep_ranges(existing_words, meta.get("deleted") or []),
+            prior_duration,
+        )
     new_end = float(meta["duration"])
     clips.append({
         "id": _new_clip_id(),
         "in": round(prior_duration, 4),
         "out": round(new_end, 4),
-        "origin_in": round(prior_duration, 4),
+        "origin_in": 0.0,
         "origin_out": round(new_end, 4),
     })
     meta["clips"] = clips
@@ -770,22 +792,13 @@ def trim_clip(pid: str, body: ClipTrimBody):
         raise HTTPException(404, "clip not found")
     c = dict(clips[idx])
     old_in, old_out = float(c["in"]), float(c["out"])
-    origin_in = float(c.get("origin_in", old_in))
-    origin_out = float(c.get("origin_out", old_out))
+    source_dur = _source_duration(meta)
+    origin_in = 0.0
+    origin_out = source_dur if source_dur > 0 else float(c.get("origin_out", old_out))
     new_in = old_in if body.in_point is None else float(body.in_point)
     new_out = old_out if body.out_point is None else float(body.out_point)
     new_in = max(origin_in, new_in)
     new_out = min(origin_out, new_out)
-    for j, other in enumerate(clips):
-        if j == idx:
-            continue
-        oi, oo = float(other["in"]), float(other["out"])
-        if oo <= new_in or oi >= new_out:
-            continue
-        if oi < old_in:
-            new_in = max(new_in, oo)
-        else:
-            new_out = min(new_out, oi)
     if new_out - new_in < 0.08:
         raise HTTPException(400, "clip too short")
 
@@ -810,7 +823,7 @@ def trim_clip(pid: str, body: ClipTrimBody):
                 continue
             deleted.discard(int(w["id"]))
             w["cut_start"] = round(max(orig_s, new_in), 4)
-            w["cut_end"] = round(min(float(w.get("cut_end", orig_e)), orig_e), 4)
+            w["cut_end"] = round(min(orig_e, old_out), 4)
 
     if new_out < old_out - 0.001:
         for w in words:
@@ -828,11 +841,13 @@ def trim_clip(pid: str, body: ClipTrimBody):
             if orig_e <= old_out + 0.005 or orig_s >= new_out - 0.005:
                 continue
             deleted.discard(int(w["id"]))
-            w["cut_start"] = round(max(float(w.get("cut_start", orig_s)), orig_s), 4)
+            w["cut_start"] = round(max(orig_s, old_in), 4)
             w["cut_end"] = round(min(orig_e, new_out), 4)
 
     c["in"] = round(new_in, 4)
     c["out"] = round(new_out, 4)
+    c["origin_in"] = 0.0
+    c["origin_out"] = source_dur
     clips[idx] = c
     meta["clips"] = clips
     meta["deleted"] = sorted(deleted)
@@ -857,6 +872,35 @@ def delete_clip(pid: str, body: ClipIdBody):
             deleted.add(int(w["id"]))
     meta["deleted"] = sorted(deleted)
     meta["clips"] = [c for c in clips if c["id"] != body.id]
+    meta["needs_retranscribe"] = True
+    _save(meta)
+    return _public(meta)
+
+
+@app.post("/api/projects/{pid}/clips/paste")
+def paste_clip(pid: str, body: ClipPasteBody):
+    meta = _load(pid)
+    clips = _ensure_clips(meta)
+    source_dur = _source_duration(meta)
+    a = max(0.0, float(body.in_point))
+    b = min(source_dur if source_dur > 0 else float(body.out_point), float(body.out_point))
+    if b - a < 0.08:
+        raise HTTPException(400, "clip too short")
+    _push_undo(meta)
+    clone = {
+        "id": _new_clip_id(),
+        "in": round(a, 4),
+        "out": round(b, 4),
+        "origin_in": 0.0,
+        "origin_out": source_dur,
+    }
+    insert_at = len(clips)
+    if body.after_id:
+        idx = next((i for i, c in enumerate(clips) if c["id"] == body.after_id), -1)
+        if idx >= 0:
+            insert_at = idx + 1
+    clips.insert(insert_at, clone)
+    meta["clips"] = clips
     meta["needs_retranscribe"] = True
     _save(meta)
     return _public(meta)
@@ -916,6 +960,7 @@ def duplicate_clip(pid: str, body: DuplicateBody):
     if not target_words:
         raise HTTPException(400, "no words to duplicate")
 
+    _push_undo(meta)
     max_id = max((int(w["id"]) for w in words), default=0)
     new_words = []
     for i, w in enumerate(target_words):
@@ -925,12 +970,6 @@ def duplicate_clip(pid: str, body: DuplicateBody):
 
     last_idx = max(i for i, w in enumerate(words) if int(w["id"]) in set(body.ids))
     words[last_idx + 1 : last_idx + 1] = new_words
-
-    meta.setdefault("undo", []).append({
-        "deleted": list(meta.get("deleted") or []),
-        "words": copy.deepcopy(words),
-    })
-    meta["redo"] = []
     meta["words"] = words
     _save(meta)
     return _public(meta)

@@ -9,6 +9,7 @@ const state = {
   selectedClipId: null,
   clips: [],
   retranscribeDismissed: false,
+  clipboard: null,
 };
 
 const chatEl = $("chat");
@@ -54,6 +55,16 @@ function keepRanges() {
 
 function editedDuration() {
   return keepRanges().reduce((n, [a, b]) => n + (b - a), 0);
+}
+
+function sourceDuration() {
+  return Math.max(0, Number(state.project?.duration) || 0);
+}
+
+function viewDuration() {
+  const d = editedDuration();
+  if (d <= 0) return 20;
+  return d + Math.max(8, Math.min(28, d * 0.45));
 }
 
 function editedToSource(t) {
@@ -187,8 +198,8 @@ function createClipObj(idx, raw) {
     wordIds: words.map((w) => w.id),
     start,
     end,
-    originIn: Number(raw.origin_in ?? start),
-    originOut: Number(raw.origin_out ?? end),
+    originIn: 0,
+    originOut: sourceDuration() || Number(raw.origin_out ?? end),
     duration: Math.max(0.01, end - start),
     text: text.length > 28 ? text.slice(0, 26) + "…" : text,
     words,
@@ -253,11 +264,23 @@ function getTimelineWidth() {
   return Math.max(baseW, baseW * state.zoomLevel);
 }
 
+function updateHistoryButtons() {
+  const canUndo = Boolean(state.project?.can_undo);
+  const canRedo = Boolean(state.project?.can_redo);
+  ["btn-undo", "btn-undo-tl"].forEach((id) => {
+    const el = $(id);
+    if (el) el.disabled = !canUndo;
+  });
+  ["btn-redo", "btn-redo-tl"].forEach((id) => {
+    const el = $(id);
+    if (el) el.disabled = !canRedo;
+  });
+}
+
 function renderMeta() {
   const p = state.project;
   $("project-name").textContent = p?.name || "Untitled";
-  $("btn-undo").disabled = !p?.can_undo;
-  $("btn-redo").disabled = !p?.can_redo;
+  updateHistoryButtons();
   const videoMode = p?.kind === "video";
   $("video-pane").hidden = !videoMode;
   document.querySelector(".stage-row").classList.toggle("has-video", videoMode);
@@ -274,7 +297,7 @@ function niceTimeStep(pxPerSec) {
 }
 
 function renderRuler() {
-  const dur = state.project ? editedDuration() || state.project.duration || 20 : 20;
+  const dur = state.project ? viewDuration() : 20;
   const w = getTimelineWidth();
   const content = $("timeline-content");
   if (content) {
@@ -310,20 +333,15 @@ function renderClips() {
   const container = $("timeline-clips");
   if (!container) return;
   const clips = buildClips();
-  const dur = editedDuration();
-  if (!clips.length || dur <= 0) {
-    container.innerHTML = "";
-    updateClipButtons();
-    return;
-  }
+  const edited = editedDuration();
+  const dur = viewDuration();
+  const timelineW = getTimelineWidth();
+  const gap = 3;
+  let accEdited = 0;
 
   if (state.selectedClipId && !clips.some((c) => c.id === state.selectedClipId)) {
     state.selectedClipId = null;
   }
-
-  const timelineW = getTimelineWidth();
-  const gap = 3;
-  let accEdited = 0;
 
   const html = clips.map((c, i) => {
     const leftPx = (accEdited / dur) * timelineW;
@@ -349,7 +367,13 @@ function renderClips() {
     `;
   }).join("");
 
-  container.innerHTML = html;
+  const plusLeft = ((edited > 0 ? edited : 0) / dur) * timelineW + (clips.length ? 8 : 12);
+  container.innerHTML = html + `
+    <button type="button" class="clip-add-end" title="Add clip" style="left:${plusLeft.toFixed(1)}px">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+        <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+      </svg>
+    </button>`;
   drawClipWaveforms();
   updateClipButtons();
 }
@@ -410,6 +434,10 @@ function updateClipButtons() {
   const hasSelection = Boolean(state.selectedClipId && state.clips.some((c) => c.id === state.selectedClipId));
   const delBtn = $("btn-delete-clip");
   if (delBtn) delBtn.disabled = !hasSelection;
+  const copyBtn = $("btn-copy-clip");
+  if (copyBtn) copyBtn.disabled = !hasSelection;
+  const pasteBtn = $("btn-paste-clip");
+  if (pasteBtn) pasteBtn.disabled = !state.clipboard;
 }
 
 function updateRetranscribeBar() {
@@ -420,8 +448,9 @@ function updateRetranscribeBar() {
 }
 
 function setPlayhead() {
-  const dur = editedDuration() || 1;
-  const pct = Math.min(1, state.editedTime / dur);
+  const edited = editedDuration() || 1;
+  const view = viewDuration();
+  const pct = Math.min(1, state.editedTime / view);
   const timelineW = getTimelineWidth();
   const phX = pct * timelineW;
 
@@ -429,7 +458,7 @@ function setPlayhead() {
   ph.hidden = !hasWords();
   ph.style.left = `${phX.toFixed(1)}px`;
 
-  const timeStr = `${fmt(state.editedTime)} / ${fmt(dur)}`;
+  const timeStr = `${fmt(state.editedTime)} / ${fmt(edited)}`;
   const tTime = $("transport-time");
   if (tTime) tTime.textContent = timeStr;
 
@@ -447,7 +476,11 @@ function setPlayhead() {
   if (state.project?.kind === "video") {
     $("video-time").textContent = timeStr;
     const src = editedToSource(state.editedTime);
-    const hit = keepWords().find((w) => src >= w.start && src <= w.end);
+    const hit = keepWords().find((w) => {
+      const s = Number(w.cut_start ?? w.start);
+      const e = Number(w.cut_end ?? w.end);
+      return src >= s && src < e;
+    });
     $("caption").innerHTML = hit
       ? keepWords()
           .filter((w) => Math.abs((w.start + w.end) / 2 - src) < 1.6)
@@ -587,14 +620,20 @@ function tick() {
 }
 
 function highlightWord(src) {
-  const words = keepWords();
-  const hit = words.find((w, i) => {
-    const next = words[i + 1];
-    const end = next ? next.start : w.end;
-    return src >= w.start && src < end;
-  });
+  const t = Number(src);
+  let hitId = null;
+  if (Number.isFinite(t)) {
+    for (const w of keepWords()) {
+      const s = Number(w.cut_start ?? w.start);
+      const e = Number(w.cut_end ?? w.end);
+      if (t >= s && t < e) {
+        hitId = Number(w.id);
+        break;
+      }
+    }
+  }
   for (const el of wordsEl.querySelectorAll(".chip")) {
-    el.classList.toggle("active", hit && Number(el.dataset.id) === hit.id);
+    el.classList.toggle("active", hitId !== null && Number(el.dataset.id) === hitId);
   }
 }
 
@@ -654,6 +693,9 @@ function pause() {
   try { videoEl.pause(); } catch {}
   setPlayingUi(false);
   cancelAnimationFrame(state.raf);
+  if (state.editedTime >= editedDuration() - 0.05) {
+    highlightWord(-1);
+  }
 }
 
 function seekEdited(t) {
@@ -719,14 +761,22 @@ $("btn-video-play").onclick = () => (state.playing ? pause() : play(false));
 $("btn-back").onclick = () => seekEdited(state.editedTime - 3);
 $("btn-fwd").onclick = () => seekEdited(state.editedTime + 3);
 
-$("btn-undo").onclick = async () => {
-  if (!state.project) return;
+async function doUndo() {
+  if (!state.project?.id || !state.project.can_undo) return;
+  pause();
   applyProject(await api(`/api/projects/${state.project.id}/undo`, { method: "POST" }));
-};
-$("btn-redo").onclick = async () => {
-  if (!state.project) return;
+}
+
+async function doRedo() {
+  if (!state.project?.id || !state.project.can_redo) return;
+  pause();
   applyProject(await api(`/api/projects/${state.project.id}/redo`, { method: "POST" }));
-};
+}
+
+$("btn-undo").onclick = () => doUndo();
+$("btn-redo").onclick = () => doRedo();
+$("btn-undo-tl").onclick = () => doUndo();
+$("btn-redo-tl").onclick = () => doRedo();
 
 $("btn-export").onclick = async () => {
   if (!state.project) return;
@@ -775,6 +825,40 @@ async function splitAtPlayhead() {
     applyProject(updated);
   } catch (err) {
     console.error("Split failed:", err);
+  }
+}
+
+function copySelectedClip() {
+  const clip = state.clips.find((c) => c.id === state.selectedClipId);
+  if (!clip) return;
+  state.clipboard = { in: clip.start, out: clip.end };
+  updateClipButtons();
+}
+
+async function pasteClip() {
+  if (!state.clipboard || !state.project?.id) return;
+  try {
+    const updated = await api(`/api/projects/${state.project.id}/clips/paste`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        in_point: state.clipboard.in,
+        out_point: state.clipboard.out,
+        after_id: state.selectedClipId,
+      }),
+    });
+    const afterId = state.selectedClipId;
+    const clips = updated.clips || [];
+    if (afterId) {
+      const idx = clips.findIndex((c) => c.id === afterId);
+      state.selectedClipId = idx >= 0 && clips[idx + 1] ? clips[idx + 1].id : clips.at(-1)?.id;
+    } else {
+      state.selectedClipId = clips.at(-1)?.id || null;
+    }
+    state.retranscribeDismissed = false;
+    applyProject(updated);
+  } catch (err) {
+    console.error("Paste failed:", err);
   }
 }
 
@@ -870,7 +954,7 @@ function setZoom(val) {
 
 function layoutClipsLive(clipsLayout) {
   const timelineW = getTimelineWidth();
-  const baseDur = Math.max(0.01, editedDuration());
+  const baseDur = Math.max(0.01, viewDuration());
   const pps = timelineW / baseDur;
   const gap = 3;
   let acc = 0;
@@ -885,6 +969,8 @@ function layoutClipsLive(clipsLayout) {
   });
   const content = $("timeline-content");
   if (content) content.style.width = `${Math.max(timelineW, acc * pps).toFixed(1)}px`;
+  const plus = document.querySelector(".clip-add-end");
+  if (plus) plus.style.left = `${(acc * pps + 8).toFixed(1)}px`;
 }
 
 function setupTimelineInteractions() {
@@ -896,12 +982,18 @@ function setupTimelineInteractions() {
     const x = e.clientX - wrapRect.left + wrap.scrollLeft;
     const timelineW = getTimelineWidth();
     const pct = Math.max(0, Math.min(1, x / timelineW));
-    return pct * editedDuration();
+    return Math.min(editedDuration(), pct * viewDuration());
   }
 
   function onMouseDown(e) {
     if (e.button !== 0) return;
     if (!state.project || !hasWords()) return;
+
+    if (e.target.closest(".clip-add-end")) {
+      e.stopPropagation();
+      $("clip-file").click();
+      return;
+    }
 
     const trimHandle = e.target.closest(".clip-trim-handle");
     if (trimHandle) {
@@ -922,7 +1014,7 @@ function setupTimelineInteractions() {
         startX: e.clientX,
         origIn: clip.start,
         origOut: clip.end,
-        pps: Math.max(8, clipEl.getBoundingClientRect().width / Math.max(0.05, clip.duration)),
+        pps: Math.max(8, getTimelineWidth() / Math.max(0.05, viewDuration())),
         liveIn: clip.start,
         liveOut: clip.end,
       };
@@ -980,22 +1072,18 @@ function setupTimelineInteractions() {
       const minLen = 0.08;
       let nextIn = dragging.origIn;
       let nextOut = dragging.origOut;
+      const originIn = 0;
+      const originOut = sourceDuration() || dragging.origOut;
       if (dragging.type === "trim-left") {
         nextIn = Math.max(
-          dragging.clip.originIn,
+          originIn,
           Math.min(dragging.origOut - minLen, dragging.origIn + deltaSec)
         );
       } else {
         nextOut = Math.min(
-          dragging.clip.originOut,
+          originOut,
           Math.max(dragging.origIn + minLen, dragging.origOut + deltaSec)
         );
-      }
-      for (const other of state.clips) {
-        if (other.id === dragging.clip.id) continue;
-        if (other.end <= nextIn || other.start >= nextOut) continue;
-        if (other.end <= dragging.origIn + 0.01) nextIn = Math.max(nextIn, other.end);
-        else if (other.start >= dragging.origOut - 0.01) nextOut = Math.min(nextOut, other.start);
       }
       dragging.liveIn = nextIn;
       dragging.liveOut = nextOut;
@@ -1054,6 +1142,8 @@ function setupTimelineInteractions() {
 
 $("btn-split").onclick = () => splitAtPlayhead();
 $("btn-delete-clip").onclick = () => deleteSelectedClip();
+$("btn-copy-clip").onclick = () => copySelectedClip();
+$("btn-paste-clip").onclick = () => pasteClip();
 $("btn-add-clip").onclick = () => $("clip-file").click();
 
 $("clip-file").onchange = async () => {
@@ -1132,19 +1222,44 @@ document.addEventListener("drop", (e) => {
   if (f) importFile(f);
 });
 
-audioEl.addEventListener("timeupdate", () => {
-  if (!state.playing) return;
-  highlightWord(audioEl.currentTime);
-});
-
 audioEl.addEventListener("ended", () => {
   pause();
   state.editedTime = 0;
+  highlightWord(-1);
   setPlayhead();
 });
 
 window.addEventListener("keydown", (e) => {
   if (["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName)) return;
+  const mod = e.metaKey || e.ctrlKey;
+
+  if (mod && e.key.toLowerCase() === "z") {
+    e.preventDefault();
+    if (e.shiftKey) doRedo();
+    else doUndo();
+    return;
+  }
+  if (mod && e.key.toLowerCase() === "y") {
+    e.preventDefault();
+    doRedo();
+    return;
+  }
+  if (mod && e.key.toLowerCase() === "c") {
+    e.preventDefault();
+    copySelectedClip();
+    return;
+  }
+  if (mod && e.key.toLowerCase() === "v") {
+    e.preventDefault();
+    pasteClip();
+    return;
+  }
+  if (mod && e.key.toLowerCase() === "d") {
+    e.preventDefault();
+    copySelectedClip();
+    pasteClip();
+    return;
+  }
 
   if (e.code === "Space") {
     e.preventDefault();
@@ -1154,7 +1269,7 @@ window.addEventListener("keydown", (e) => {
     if (hasWords()) {
       state.playing ? pause() : play(false);
     }
-  } else if (e.key === "s" || e.key === "S") {
+  } else if ((e.key === "s" || e.key === "S") && !mod) {
     e.preventDefault();
     splitAtPlayhead();
   } else if (e.key === "Delete" || e.key === "Backspace") {
