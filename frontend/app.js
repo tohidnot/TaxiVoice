@@ -333,9 +333,7 @@ function renderClips() {
   const container = $("timeline-clips");
   if (!container) return;
   const clips = buildClips();
-  const edited = editedDuration();
-  const dur = viewDuration();
-  const timelineW = getTimelineWidth();
+  const pps = timelinePps();
   const gap = 3;
   let accEdited = 0;
 
@@ -344,8 +342,8 @@ function renderClips() {
   }
 
   const html = clips.map((c, i) => {
-    const leftPx = (accEdited / dur) * timelineW;
-    const widthPx = Math.max(36, (c.duration / dur) * timelineW - gap);
+    const leftPx = accEdited * pps;
+    const widthPx = Math.max(12, c.duration * pps - gap);
     accEdited += c.duration;
     const isSelected = state.selectedClipId === c.id;
 
@@ -354,20 +352,20 @@ function renderClips() {
            data-clip-id="${c.id}"
            data-clip-idx="${i}"
            style="left: ${leftPx.toFixed(1)}px; width: ${widthPx.toFixed(1)}px;">
-        <div class="clip-trim-handle left" data-clip-id="${c.id}" data-side="left" title="Trim start">
-          <span class="grip"></span>
-        </div>
         <div class="clip-wave-wrap">
           <canvas class="clip-wave-canvas" data-canvas-clip="${i}"></canvas>
         </div>
-        <div class="clip-trim-handle right" data-clip-id="${c.id}" data-side="right" title="Trim end">
+        <div class="clip-trim-handle left" data-clip-id="${c.id}" data-side="left" title="Extend / trim start">
+          <span class="grip"></span>
+        </div>
+        <div class="clip-trim-handle right" data-clip-id="${c.id}" data-side="right" title="Extend / trim end">
           <span class="grip"></span>
         </div>
       </div>
     `;
   }).join("");
 
-  const plusLeft = ((edited > 0 ? edited : 0) / dur) * timelineW + (clips.length ? 8 : 12);
+  const plusLeft = accEdited * pps + (clips.length ? 8 : 12);
   container.innerHTML = html + `
     <button type="button" class="clip-add-end" title="Add clip" style="left:${plusLeft.toFixed(1)}px">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
@@ -380,44 +378,46 @@ function renderClips() {
 
 function drawClipWaveforms() {
   const peaks = state.project?.peaks || [];
-  const totalDur = state.project?.duration || 1;
+  const totalDur = Math.max(0.01, sourceDuration());
+  const pps = timelinePps();
   const dpr = window.devicePixelRatio || 1;
+  const srcW = Math.max(4, totalDur * pps);
 
   document.querySelectorAll(".clip-wave-canvas").forEach((canvas) => {
     const clipIdx = Number(canvas.dataset.canvasClip);
     const clip = state.clips[clipIdx];
     if (!clip) return;
 
-    const rect = canvas.getBoundingClientRect();
-    const w = Math.floor(rect.width);
-    const h = Math.floor(rect.height);
-    if (w < 4 || h < 4) return;
+    const wrap = canvas.parentElement;
+    const h = Math.max(8, Math.floor(wrap.getBoundingClientRect().height));
 
-    canvas.width = Math.floor(w * dpr);
-    canvas.height = Math.floor(h * dpr);
+    canvas.style.width = `${srcW}px`;
+    canvas.style.height = `${h}px`;
+    canvas.style.left = `${(-clip.start * pps).toFixed(2)}px`;
+
+    const bw = Math.max(1, Math.floor(srcW * dpr));
+    const bh = Math.max(1, Math.floor(h * dpr));
+    if (canvas.width !== bw) canvas.width = bw;
+    if (canvas.height !== bh) canvas.height = bh;
+
     const cctx = canvas.getContext("2d");
     cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    cctx.clearRect(0, 0, w, h);
-
-    const selected = state.selectedClipId === clip.id;
-    cctx.fillStyle = selected ? "#6d6d75" : "#9a9aa2";
+    cctx.clearRect(0, 0, srcW, h);
+    cctx.fillStyle = "#9a9aa2";
     const mid = h / 2;
 
     if (!peaks.length) {
-      cctx.fillRect(0, mid - 1, w, 2);
+      cctx.fillRect(0, mid - 1, srcW, 2);
       return;
     }
 
-    const i0 = Math.floor((clip.start / totalDur) * peaks.length);
-    const i1 = Math.ceil((clip.end / totalDur) * peaks.length);
-    const clipPeaks = peaks.slice(i0, Math.max(i0 + 1, i1));
-    const n = clipPeaks.length;
+    const n = peaks.length;
     const bar = 2;
     const stride = 3;
-
-    for (let x = 0; x < w; x += stride) {
-      const idx = Math.min(n - 1, Math.floor((x / w) * n));
-      const amp = Math.max(1.2, (clipPeaks[idx] || 0) * (h * 0.4));
+    for (let x = 0; x < srcW; x += stride) {
+      const t = x / pps;
+      const idx = Math.min(n - 1, Math.max(0, Math.floor((t / totalDur) * n)));
+      const amp = Math.max(1.2, (peaks[idx] || 0) * (h * 0.38));
       cctx.fillRect(x, mid - amp, bar, amp * 2);
     }
   });
@@ -447,10 +447,14 @@ function updateRetranscribeBar() {
   bar.hidden = !dirty;
 }
 
+function timelinePps() {
+  return getTimelineWidth() / Math.max(0.01, viewDuration());
+}
+
 function setPlayhead() {
   const edited = editedDuration() || 1;
   const view = viewDuration();
-  const pct = Math.min(1, state.editedTime / view);
+  const pct = Math.min(1, Math.max(0, state.editedTime / view));
   const timelineW = getTimelineWidth();
   const phX = pct * timelineW;
 
@@ -699,11 +703,21 @@ function pause() {
 }
 
 function seekEdited(t) {
-  state.editedTime = Math.max(0, Math.min(editedDuration(), t));
+  const edited = editedDuration();
+  const view = viewDuration();
+  state.editedTime = Math.max(0, Math.min(view, Number(t) || 0));
   const media = mediaEl();
-  if (media.src) media.currentTime = editedToSource(state.editedTime);
+  if (media.src) {
+    const srcT = state.editedTime >= edited - 0.001
+      ? editedToSource(Math.max(0, edited - 0.001))
+      : editedToSource(state.editedTime);
+    try { media.currentTime = srcT; } catch {}
+    if (state.project?.kind === "video" && videoEl.src) {
+      try { videoEl.currentTime = srcT; } catch {}
+    }
+  }
   setPlayhead();
-  highlightWord(editedToSource(state.editedTime));
+  highlightWord(state.editedTime >= edited - 0.001 ? -1 : editedToSource(state.editedTime));
 }
 
 function pickFile() {
@@ -952,23 +966,22 @@ function setZoom(val) {
   setPlayhead();
 }
 
-function layoutClipsLive(clipsLayout) {
-  const timelineW = getTimelineWidth();
-  const baseDur = Math.max(0.01, viewDuration());
-  const pps = timelineW / baseDur;
+function layoutClipsLive(clipsLayout, pps) {
   const gap = 3;
   let acc = 0;
   document.querySelectorAll(".timeline-clip").forEach((el) => {
     const clip = clipsLayout.find((c) => c.id === el.dataset.clipId);
     if (!clip) return;
-    const widthPx = Math.max(36, (clip.end - clip.start) * pps - gap);
-    const leftPx = acc * pps;
-    el.style.left = `${leftPx.toFixed(1)}px`;
-    el.style.width = `${widthPx.toFixed(1)}px`;
-    acc += Math.max(0.01, clip.end - clip.start);
+    const dur = Math.max(0.08, clip.end - clip.start);
+    el.style.left = `${(acc * pps).toFixed(1)}px`;
+    el.style.width = `${Math.max(8, dur * pps - gap).toFixed(1)}px`;
+    const canvas = el.querySelector(".clip-wave-canvas");
+    if (canvas) canvas.style.left = `${(-clip.start * pps).toFixed(2)}px`;
+    acc += dur;
   });
+  const timelineW = getTimelineWidth();
   const content = $("timeline-content");
-  if (content) content.style.width = `${Math.max(timelineW, acc * pps).toFixed(1)}px`;
+  if (content) content.style.width = `${Math.max(timelineW, acc * pps + 96).toFixed(1)}px`;
   const plus = document.querySelector(".clip-add-end");
   if (plus) plus.style.left = `${(acc * pps + 8).toFixed(1)}px`;
 }
@@ -977,25 +990,58 @@ function setupTimelineInteractions() {
   let dragging = null;
 
   function pointerTime(e) {
-    const wrap = $("timeline-scroll-wrap");
-    const wrapRect = wrap.getBoundingClientRect();
-    const x = e.clientX - wrapRect.left + wrap.scrollLeft;
-    const timelineW = getTimelineWidth();
+    const content = $("timeline-content");
+    if (!content) return 0;
+    const rect = content.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const timelineW = Math.max(1, content.offsetWidth || getTimelineWidth());
     const pct = Math.max(0, Math.min(1, x / timelineW));
-    return Math.min(editedDuration(), pct * viewDuration());
+    return pct * viewDuration();
   }
 
-  function onMouseDown(e) {
-    if (e.button !== 0) return;
+  function hitFromPoint(e, selector) {
+    const stack = document.elementsFromPoint(e.clientX, e.clientY);
+    for (const el of stack) {
+      if (el.matches?.(selector)) return el;
+      const closest = el.closest?.(selector);
+      if (closest) return closest;
+    }
+    return null;
+  }
+
+  function isNearPlayhead(e) {
+    const ph = $("playhead");
+    if (!ph || ph.hidden) return false;
+    const r = ph.getBoundingClientRect();
+    const cx = r.left + r.width / 2;
+    return Math.abs(e.clientX - cx) <= 10 && e.clientY >= r.top - 2 && e.clientY <= r.bottom + 2;
+  }
+
+  function startPlayheadDrag(e) {
+    if (state.playing) pause();
+    document.body.classList.add("scrubbing");
+    seekEdited(pointerTime(e));
+    dragging = { type: "playhead" };
+  }
+
+  function capturePointer(e) {
+    const el = $("timeline-container");
+    if (el && e.pointerId != null) {
+      try { el.setPointerCapture(e.pointerId); } catch {}
+    }
+  }
+
+  function onPointerDown(e) {
+    if (e.button !== 0 && e.pointerType === "mouse") return;
     if (!state.project || !hasWords()) return;
 
-    if (e.target.closest(".clip-add-end")) {
+    if (hitFromPoint(e, ".clip-add-end") || e.target.closest(".clip-add-end")) {
       e.stopPropagation();
       $("clip-file").click();
       return;
     }
 
-    const trimHandle = e.target.closest(".clip-trim-handle");
+    const trimHandle = hitFromPoint(e, ".clip-trim-handle") || e.target.closest(".clip-trim-handle");
     if (trimHandle) {
       e.stopPropagation();
       e.preventDefault();
@@ -1006,6 +1052,7 @@ function setupTimelineInteractions() {
       updateClipSelection();
       trimHandle.classList.add("trimming");
       clipEl?.classList.add("trimming");
+      document.body.classList.add("trimming-clip");
       dragging = {
         type: trimHandle.dataset.side === "left" ? "trim-left" : "trim-right",
         clip,
@@ -1014,10 +1061,19 @@ function setupTimelineInteractions() {
         startX: e.clientX,
         origIn: clip.start,
         origOut: clip.end,
-        pps: Math.max(8, getTimelineWidth() / Math.max(0.05, viewDuration())),
+        pps: timelinePps(),
         liveIn: clip.start,
         liveOut: clip.end,
       };
+      capturePointer(e);
+      return;
+    }
+
+    if (e.target.closest(".playhead") || isNearPlayhead(e)) {
+      e.preventDefault();
+      e.stopPropagation();
+      startPlayheadDrag(e);
+      capturePointer(e);
       return;
     }
 
@@ -1039,17 +1095,14 @@ function setupTimelineInteractions() {
       return;
     }
 
-    const container = e.target.closest(".timeline-container");
-    if (container) {
+    if (e.target.closest(".timeline-container")) {
       e.preventDefault();
-      seekEdited(pointerTime(e));
-      state.selectedClipId = null;
-      updateClipSelection();
-      dragging = { type: "playhead" };
+      startPlayheadDrag(e);
+      capturePointer(e);
     }
   }
 
-  function onMouseMove(e) {
+  function onPointerMove(e) {
     if (!dragging || !state.project) return;
 
     if (dragging.type === "playhead") {
@@ -1070,35 +1123,29 @@ function setupTimelineInteractions() {
     if (dragging.type === "trim-left" || dragging.type === "trim-right") {
       const deltaSec = (e.clientX - dragging.startX) / dragging.pps;
       const minLen = 0.08;
-      let nextIn = dragging.origIn;
-      let nextOut = dragging.origOut;
       const originIn = 0;
       const originOut = sourceDuration() || dragging.origOut;
+      let nextIn = dragging.origIn;
+      let nextOut = dragging.origOut;
       if (dragging.type === "trim-left") {
-        nextIn = Math.max(
-          originIn,
-          Math.min(dragging.origOut - minLen, dragging.origIn + deltaSec)
-        );
+        nextIn = Math.max(originIn, Math.min(dragging.origOut - minLen, dragging.origIn + deltaSec));
       } else {
-        nextOut = Math.min(
-          originOut,
-          Math.max(dragging.origIn + minLen, dragging.origOut + deltaSec)
-        );
+        nextOut = Math.min(originOut, Math.max(dragging.origIn + minLen, dragging.origOut + deltaSec));
       }
       dragging.liveIn = nextIn;
       dragging.liveOut = nextOut;
       const live = state.clips.map((c) =>
         c.id === dragging.clip.id ? { ...c, start: nextIn, end: nextOut } : c
       );
-      layoutClipsLive(live);
-      return;
+      layoutClipsLive(live, dragging.pps);
     }
   }
 
-  async function onMouseUp(e) {
+  async function onPointerUp(e) {
     if (!dragging) return;
     const cur = dragging;
     dragging = null;
+    document.body.classList.remove("scrubbing", "trimming-clip");
 
     if (cur.type === "playhead") return;
 
@@ -1107,11 +1154,8 @@ function setupTimelineInteractions() {
       cur.clipEl.style.transform = "";
       if (!cur.moved) return;
       const deltaX = e.clientX - cur.startX;
-      const timelineW = getTimelineWidth();
-      const dur = editedDuration();
-      const deltaSec = (deltaX / timelineW) * dur;
       if (Math.abs(deltaX) > 24) {
-        const newIdx = calculateNewClipIndex(cur.clipIdx, deltaSec);
+        const newIdx = calculateNewClipIndex(cur.clipIdx, deltaX / Math.max(1, timelinePps()));
         if (newIdx !== cur.clipIdx && newIdx >= 0 && newIdx < state.clips.length) {
           await reorderClips(cur.clipIdx, newIdx);
         }
@@ -1134,10 +1178,11 @@ function setupTimelineInteractions() {
 
   const container = $("timeline-container");
   if (container) {
-    container.addEventListener("mousedown", onMouseDown);
+    container.addEventListener("pointerdown", onPointerDown);
   }
-  window.addEventListener("mousemove", onMouseMove);
-  window.addEventListener("mouseup", onMouseUp);
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp);
+  window.addEventListener("pointercancel", onPointerUp);
 }
 
 $("btn-split").onclick = () => splitAtPlayhead();
