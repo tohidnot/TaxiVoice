@@ -193,10 +193,13 @@ def _clips_from_ranges(ranges: list[tuple[float, float]], duration: float = 0.0)
     ]
 
 
+def _clips_stored(meta: dict) -> bool:
+    return isinstance(meta.get("clips"), list)
+
+
 def _ensure_clips(meta: dict) -> list[dict]:
-    clips = list(meta.get("clips") or [])
-    if clips:
-        return clips
+    if _clips_stored(meta):
+        return list(meta.get("clips") or [])
     words = meta.get("words") or []
     deleted = set(meta.get("deleted") or [])
     clips = _clips_from_ranges(keep_ranges(words, deleted), _source_duration(meta))
@@ -205,11 +208,10 @@ def _ensure_clips(meta: dict) -> list[dict]:
 
 
 def _clip_ranges(meta: dict) -> list[tuple[float, float]]:
-    clips = meta.get("clips") or []
-    if clips:
+    if _clips_stored(meta):
         return [
             (float(c["in"]), float(c["out"]))
-            for c in clips
+            for c in meta.get("clips") or []
             if float(c["out"]) - float(c["in"]) > 0.02
         ]
     return keep_ranges(meta.get("words") or [], meta.get("deleted") or [])
@@ -252,14 +254,15 @@ def _subtract_from_clips(clips: list[dict], a: float, b: float) -> list[dict]:
 def _public(meta: dict) -> dict:
     words = meta.get("words") or []
     deleted = set(meta.get("deleted") or [])
-    clips = list(meta.get("clips") or [])
-    if not clips:
+    if _clips_stored(meta):
+        clips = list(meta.get("clips") or [])
+    else:
         clips = _clips_from_ranges(keep_ranges(words, deleted), _source_duration(meta))
     ranges = [
         (float(c["in"]), float(c["out"]))
         for c in clips
         if float(c["out"]) - float(c["in"]) > 0.02
-    ] or keep_ranges(words, deleted)
+    ]
     edited = sum(b - a for a, b in ranges)
     return {
         "id": meta["id"],
@@ -330,7 +333,16 @@ async def import_media(file: UploadFile = File(...), session_id: str | None = Fo
             existing = _load(session_id)
         except HTTPException:
             existing = None
-    reuse = bool(existing and not (existing.get("words") or []))
+    reuse = bool(
+        existing
+        and (
+            not (existing.get("words") or [])
+            or (
+                isinstance(existing.get("clips"), list)
+                and len(existing.get("clips") or []) == 0
+            )
+        )
+    )
     pid = existing["id"] if reuse else uuid.uuid4().hex[:12]
     dest = DATA / pid
     dest.mkdir(parents=True, exist_ok=True)
@@ -474,7 +486,7 @@ def latest_project():
 @app.get("/api/projects/{pid}")
 def get_project(pid: str):
     meta = _load(pid)
-    if (meta.get("words") or []) and not (meta.get("clips") or []):
+    if (meta.get("words") or []) and not _clips_stored(meta):
         _ensure_clips(meta)
         _save(meta)
     return _public(meta)
@@ -912,40 +924,40 @@ def retranscribe(pid: str):
         raise HTTPException(500, "Parakeet v3 is not installed on this Mac")
     meta = _load(pid)
     dest = _proj_dir(pid)
-    wav44 = Path(meta.get("wav44") or "")
-    if not wav44.is_file():
-        raise HTTPException(400, "no audio to re-transcribe")
-    pcm, sr = _read_wav(wav44)
-    ranges = _clip_ranges(meta)
-    if not ranges:
-        raise HTTPException(400, "nothing left to re-transcribe")
-    out_pcm = render_keep_ranges(pcm, sr, ranges)
-    _write_wav(wav44, out_pcm, sr)
+    original = Path(meta.get("original") or "")
+    wav44 = Path(meta.get("wav44") or dest / "audio.44100.wav")
     wav16 = dest / "audio.16k.wav"
-    to_wav(wav44, wav16, 16000)
+    if original.is_file():
+        to_wav(original, wav16, 16000)
+        to_wav(original, wav44, 44100)
+        meta["wav44"] = str(wav44)
+    elif wav44.is_file():
+        to_wav(wav44, wav16, 16000)
+    else:
+        raise HTTPException(400, "no audio to re-transcribe")
     asr = transcribe_wav(wav16)
-    words = refine_words(asr.get("words") or [], out_pcm, sr)
-    duration = round(len(out_pcm) / float(sr), 3)
+    pcm, sr = _read_wav(wav44)
+    words = refine_words(asr.get("words") or [], pcm, sr)
+    duration = round(len(pcm) / float(sr), 3)
+    _push_undo(meta)
     meta["words"] = words
     meta["deleted"] = []
     meta["duration"] = duration
-    meta["peaks"] = waveform_peaks(out_pcm, 1600)
+    meta["peaks"] = waveform_peaks(pcm, 1600)
     meta["model"] = asr.get("model")
-    meta["clips"] = [
-        {
-            "id": _new_clip_id(),
-            "in": 0.0,
-            "out": duration,
-            "origin_in": 0.0,
-            "origin_out": duration,
-        }
-    ] if duration > 0.02 else []
+    clips = list(meta.get("clips") or [])
+    for c in clips:
+        cin = max(0.0, min(float(c.get("in") or 0), duration))
+        cout = max(cin + 0.08, min(float(c.get("out") or 0), duration)) if duration > 0.08 else cin
+        c["in"] = round(cin, 4)
+        c["out"] = round(min(cout, duration), 4)
+        c["origin_in"] = 0.0
+        c["origin_out"] = duration
+    meta["clips"] = [c for c in clips if float(c["out"]) - float(c["in"]) > 0.02]
     meta["needs_retranscribe"] = False
-    meta["undo"] = []
-    meta["redo"] = []
     meta.setdefault("messages", []).append({
         "role": "assistant",
-        "text": f"Re-transcribed {len(words)} words from the current timeline.",
+        "text": f"Re-transcribed {len(words)} words. Timeline clips were left as they are.",
     })
     _save(meta)
     return _public(meta)

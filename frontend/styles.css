@@ -920,12 +920,12 @@ button:focus-visible {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 16px;
-  margin-left: -8px;
+  width: 20px;
+  margin-left: -10px;
   background: transparent;
   pointer-events: auto;
   cursor: ew-resize;
-  z-index: 25;
+  z-index: 80;
   touch-action: none;
 }
 .playhead::before {

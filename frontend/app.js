@@ -31,7 +31,7 @@ function keepWords() {
 
 function keepRanges() {
   const clips = state.project?.clips;
-  if (Array.isArray(clips) && clips.length) {
+  if (Array.isArray(clips)) {
     return clips
       .map((c) => [Number(c.in), Number(c.out)])
       .filter(([a, b]) => b - a > 0.02);
@@ -121,6 +121,12 @@ function hasWords() {
   return Array.isArray(state.project?.words) && state.project.words.length > 0;
 }
 
+function hasClips() {
+  const clips = state.project?.clips;
+  if (Array.isArray(clips)) return clips.length > 0;
+  return hasWords();
+}
+
 function setStageMode(mode) {
   $("dropzone").hidden = mode !== "empty";
   $("loading").hidden = mode !== "loading";
@@ -136,7 +142,7 @@ function wordsForChips() {
   const words = Array.isArray(p?.words) ? p.words : [];
   const kept = words.filter((w) => !w.deleted);
   const clips = Array.isArray(p?.clips) ? p.clips : [];
-  if (!clips.length) return kept;
+  if (!clips.length) return [];
   const ordered = [];
   const seen = new Set();
   for (const c of clips) {
@@ -151,9 +157,6 @@ function wordsForChips() {
         seen.add(w.id);
       }
     }
-  }
-  for (const w of kept) {
-    if (!seen.has(w.id)) ordered.push(w);
   }
   return ordered;
 }
@@ -208,7 +211,7 @@ function createClipObj(idx, raw) {
 
 function buildClips() {
   const p = state.project;
-  if (Array.isArray(p?.clips) && p.clips.length) {
+  if (Array.isArray(p?.clips)) {
     state.clips = p.clips.map((c, i) => createClipObj(i, c));
     return state.clips;
   }
@@ -459,7 +462,7 @@ function setPlayhead() {
   const phX = pct * timelineW;
 
   const ph = $("playhead");
-  ph.hidden = !hasWords();
+  ph.hidden = !hasClips();
   ph.style.left = `${phX.toFixed(1)}px`;
 
   const timeStr = `${fmt(state.editedTime)} / ${fmt(edited)}`;
@@ -507,12 +510,16 @@ function attachMedia(p, force = false) {
 function applyProject(p) {
   state.project = p;
   if (!p?.needs_retranscribe) state.retranscribeDismissed = false;
-  if (hasWords()) setStageMode("ready");
-  else if (!state.importing) setStageMode("empty");
+  if (hasClips()) {
+    setStageMode("ready");
+  } else if (!state.importing) {
+    pause();
+    setStageMode("empty");
+  }
   renderChat();
   renderWords();
   renderMeta();
-  attachMedia(p);
+  if (hasClips()) attachMedia(p);
   setPlayhead();
   updateRetranscribeBar();
 }
@@ -540,6 +547,8 @@ async function importFile(file) {
   pause();
   $("loading-name").textContent = file.name;
   setStageMode("loading");
+  const reuseSession = Boolean(state.project?.id && !hasClips());
+  const sessionId = state.project?.id;
   const pending = {
     ...(state.project || { words: [], messages: [] }),
     name: file.name.replace(/\.[^.]+$/, ""),
@@ -554,8 +563,8 @@ async function importFile(file) {
   renderChat();
   $("project-name").textContent = pending.name;
   try {
-    if (state.project?.id && !hasWords()) {
-      fd.append("session_id", state.project.id);
+    if (reuseSession && sessionId) {
+      fd.append("session_id", sessionId);
     }
     const p = await api("/api/projects/import", { method: "POST", body: fd });
     state.editedTime = 0;
@@ -665,7 +674,7 @@ function setPlayingUi(on) {
 }
 
 function play(fromStart = false) {
-  if (!hasWords()) return;
+  if (!hasClips()) return;
   attachMedia(state.project);
   const dur = editedDuration();
   if (fromStart || (dur > 0 && state.editedTime >= dur - 0.02)) {
@@ -989,14 +998,27 @@ function layoutClipsLive(clipsLayout, pps) {
 function setupTimelineInteractions() {
   let dragging = null;
 
-  function pointerTime(e) {
+  function timeFromClientX(clientX) {
+    const wrap = $("timeline-scroll-wrap");
     const content = $("timeline-content");
-    if (!content) return 0;
-    const rect = content.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const timelineW = Math.max(1, content.offsetWidth || getTimelineWidth());
-    const pct = Math.max(0, Math.min(1, x / timelineW));
+    if (!wrap || !content) return 0;
+    const rect = wrap.getBoundingClientRect();
+    const w = Math.max(1, content.offsetWidth || getTimelineWidth());
+    const x = wrap.scrollLeft + (clientX - rect.left);
+    const pct = Math.max(0, Math.min(1, x / w));
     return pct * viewDuration();
+  }
+
+  function autoScrollForScrub(clientX) {
+    const wrap = $("timeline-scroll-wrap");
+    if (!wrap) return;
+    const rect = wrap.getBoundingClientRect();
+    const edge = 40;
+    if (clientX > rect.right - edge) {
+      wrap.scrollLeft += Math.max(8, (clientX - (rect.right - edge)) * 0.6);
+    } else if (clientX < rect.left + edge) {
+      wrap.scrollLeft -= Math.max(8, (rect.left + edge - clientX) * 0.6);
+    }
   }
 
   function hitFromPoint(e, selector) {
@@ -1014,26 +1036,24 @@ function setupTimelineInteractions() {
     if (!ph || ph.hidden) return false;
     const r = ph.getBoundingClientRect();
     const cx = r.left + r.width / 2;
-    return Math.abs(e.clientX - cx) <= 10 && e.clientY >= r.top - 2 && e.clientY <= r.bottom + 2;
+    return Math.abs(e.clientX - cx) <= 14 && e.clientY >= r.top - 4 && e.clientY <= r.bottom + 4;
+  }
+
+  function scrubToClientX(clientX) {
+    autoScrollForScrub(clientX);
+    seekEdited(timeFromClientX(clientX));
   }
 
   function startPlayheadDrag(e) {
     if (state.playing) pause();
     document.body.classList.add("scrubbing");
-    seekEdited(pointerTime(e));
     dragging = { type: "playhead" };
-  }
-
-  function capturePointer(e) {
-    const el = $("timeline-container");
-    if (el && e.pointerId != null) {
-      try { el.setPointerCapture(e.pointerId); } catch {}
-    }
+    scrubToClientX(e.clientX);
   }
 
   function onPointerDown(e) {
     if (e.button !== 0 && e.pointerType === "mouse") return;
-    if (!state.project || !hasWords()) return;
+    if (!state.project || !hasClips()) return;
 
     if (hitFromPoint(e, ".clip-add-end") || e.target.closest(".clip-add-end")) {
       e.stopPropagation();
@@ -1065,7 +1085,6 @@ function setupTimelineInteractions() {
         liveIn: clip.start,
         liveOut: clip.end,
       };
-      capturePointer(e);
       return;
     }
 
@@ -1073,7 +1092,6 @@ function setupTimelineInteractions() {
       e.preventDefault();
       e.stopPropagation();
       startPlayheadDrag(e);
-      capturePointer(e);
       return;
     }
 
@@ -1098,15 +1116,19 @@ function setupTimelineInteractions() {
     if (e.target.closest(".timeline-container")) {
       e.preventDefault();
       startPlayheadDrag(e);
-      capturePointer(e);
     }
   }
 
-  function onPointerMove(e) {
+  function onDragMove(e) {
     if (!dragging || !state.project) return;
+    if (dragging.type === "playhead" && e.type === "mousemove" && e.buttons === 0) {
+      onDragUp(e);
+      return;
+    }
 
     if (dragging.type === "playhead") {
-      seekEdited(pointerTime(e));
+      if (e.cancelable) e.preventDefault();
+      scrubToClientX(e.clientX);
       return;
     }
 
@@ -1141,7 +1163,7 @@ function setupTimelineInteractions() {
     }
   }
 
-  async function onPointerUp(e) {
+  async function onDragUp(e) {
     if (!dragging) return;
     const cur = dragging;
     dragging = null;
@@ -1178,11 +1200,23 @@ function setupTimelineInteractions() {
 
   const container = $("timeline-container");
   if (container) {
-    container.addEventListener("pointerdown", onPointerDown);
+    container.addEventListener("mousedown", onPointerDown);
   }
-  window.addEventListener("pointermove", onPointerMove);
-  window.addEventListener("pointerup", onPointerUp);
-  window.addEventListener("pointercancel", onPointerUp);
+  const playhead = $("playhead");
+  if (playhead) {
+    playhead.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      if (!state.project || !hasClips()) return;
+      e.preventDefault();
+      e.stopPropagation();
+      startPlayheadDrag(e);
+    });
+  }
+  document.addEventListener("mousemove", onDragMove, true);
+  document.addEventListener("mouseup", onDragUp, true);
+  document.addEventListener("pointermove", onDragMove, true);
+  document.addEventListener("pointerup", onDragUp, true);
+  document.addEventListener("pointercancel", onDragUp, true);
 }
 
 $("btn-split").onclick = () => splitAtPlayhead();
@@ -1311,7 +1345,7 @@ window.addEventListener("keydown", (e) => {
     if (document.activeElement && document.activeElement.tagName === "BUTTON") {
       document.activeElement.blur();
     }
-    if (hasWords()) {
+    if (hasClips()) {
       state.playing ? pause() : play(false);
     }
   } else if ((e.key === "s" || e.key === "S") && !mod) {
