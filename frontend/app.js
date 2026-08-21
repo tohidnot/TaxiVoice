@@ -4,6 +4,8 @@ const state = {
   project: null,
   playing: false,
   editedTime: 0,
+  playClipIndex: 0,
+  clipSeekUntil: 0,
   raf: 0,
   zoomLevel: 1.0,
   selectedClipId: null,
@@ -67,29 +69,69 @@ function viewDuration() {
   return d + Math.max(8, Math.min(28, d * 0.45));
 }
 
-function editedToSource(t) {
-  let left = Math.max(0, t);
-  for (const [a, b] of keepRanges()) {
-    const span = b - a;
-    if (left <= span) return a + left;
-    left -= span;
-  }
-  const last = keepRanges().at(-1);
-  return last ? last[1] : 0;
+function ensureClips() {
+  if (!state.clips.length && state.project) buildClips();
+  return state.clips;
 }
 
-function sourceToEdited(src) {
+function editedStartOf(idx) {
+  const clips = ensureClips();
   let acc = 0;
-  for (const [a, b] of keepRanges()) {
-    if (src < a) return acc;
-    if (src <= b) return acc + (src - a);
-    acc += b - a;
-  }
+  for (let i = 0; i < idx && i < clips.length; i++) acc += clips[i].duration;
   return acc;
+}
+
+function clipAtEditedTime(t) {
+  const clips = ensureClips();
+  if (!clips.length) return null;
+  const time = Math.max(0, Number(t) || 0);
+  let acc = 0;
+  for (let i = 0; i < clips.length; i++) {
+    const d = Math.max(0.01, clips[i].duration);
+    if (time < acc + d) {
+      return {
+        i,
+        clip: clips[i],
+        offset: Math.min(d, Math.max(0, time - acc)),
+        editedStart: acc,
+        pastEnd: false,
+      };
+    }
+    acc += d;
+  }
+  const last = clips[clips.length - 1];
+  return {
+    i: clips.length - 1,
+    clip: last,
+    offset: last.duration,
+    editedStart: acc - last.duration,
+    pastEnd: true,
+  };
+}
+
+function sourceAtEdited(t) {
+  const pos = clipAtEditedTime(t);
+  if (!pos) return 0;
+  return pos.clip.start + pos.offset;
+}
+
+function editedToSource(t) {
+  return sourceAtEdited(t);
 }
 
 function mediaEl() {
   return audioEl;
+}
+
+function syncVideo(srcT, force = false) {
+  if (state.project?.kind !== "video") return;
+  if (!videoEl.src) return;
+  videoEl.muted = true;
+  try {
+    if (force || Math.abs((videoEl.currentTime || 0) - srcT) > 0.05) {
+      videoEl.currentTime = srcT;
+    }
+  } catch {}
 }
 
 function renderChat() {
@@ -140,21 +182,18 @@ function setStageMode(mode) {
 function wordsForChips() {
   const p = state.project;
   const words = Array.isArray(p?.words) ? p.words : [];
-  const kept = words.filter((w) => !w.deleted);
   const clips = Array.isArray(p?.clips) ? p.clips : [];
   if (!clips.length) return [];
   const ordered = [];
-  const seen = new Set();
   for (const c of clips) {
     const a = Number(c.in);
     const b = Number(c.out);
-    for (const w of kept) {
-      if (seen.has(w.id)) continue;
+    for (const w of words) {
+      if (w.deleted) continue;
       const s = w.cut_start ?? w.start;
       const e = w.cut_end ?? w.end;
       if (e > a && s < b) {
-        ordered.push(w);
-        seen.add(w.id);
+        ordered.push({ ...w, clipId: c.id });
       }
     }
   }
@@ -174,7 +213,7 @@ function renderWords() {
   wordsEl.innerHTML = visible
     .map(
       (w) =>
-        `<button type="button" class="chip" data-id="${w.id}"><span>${escapeHtml(w.word)}</span><span class="x" data-del="${w.id}" title="Delete word">×</span></button>`
+        `<button type="button" class="chip" data-id="${w.id}" data-clip-id="${w.clipId || ""}"><span>${escapeHtml(w.word)}</span><span class="x" data-del="${w.id}" title="Delete word">×</span></button>`
     )
     .join("");
   $("btn-play-inline").hidden = false;
@@ -482,7 +521,8 @@ function setPlayhead() {
 
   if (state.project?.kind === "video") {
     $("video-time").textContent = timeStr;
-    const src = editedToSource(state.editedTime);
+    const pos = clipAtEditedTime(state.editedTime);
+    const src = pos ? pos.clip.start + pos.offset : 0;
     const hit = keepWords().find((w) => {
       const s = Number(w.cut_start ?? w.start);
       const e = Number(w.cut_end ?? w.end);
@@ -504,7 +544,13 @@ function attachMedia(p, force = false) {
     audioEl.src = force ? `${url}?t=${Date.now()}` : url;
     audioEl.load();
   }
-  if (p.kind === "video") videoEl.src = `/api/projects/${p.id}/media`;
+  if (p.kind === "video") {
+    const vurl = `/api/projects/${p.id}/media`;
+    if (force || !videoEl.src.includes(`${p.id}/media`)) {
+      videoEl.src = vurl;
+    }
+    videoEl.muted = true;
+  }
 }
 
 function applyProject(p) {
@@ -568,8 +614,10 @@ async function importFile(file) {
     }
     const p = await api("/api/projects/import", { method: "POST", body: fd });
     state.editedTime = 0;
+    state.playClipIndex = 0;
     state.importing = false;
     applyProject(p);
+    attachMedia(p, true);
   } catch (err) {
     state.importing = false;
     pending.messages.push({ role: "assistant", text: `Could not import: ${err.message}` });
@@ -610,32 +658,76 @@ async function sendChat(text) {
   }
 }
 
+function markClipSeek() {
+  state.clipSeekUntil = performance.now() + 180;
+}
+
+function advancePlayClip(fromIdx) {
+  const clips = ensureClips();
+  const next = fromIdx + 1;
+  if (next >= clips.length) {
+    pause();
+    state.editedTime = editedDuration();
+    highlightWord(-1);
+    setPlayhead();
+    return false;
+  }
+  state.playClipIndex = next;
+  const clip = clips[next];
+  const srcT = clip.start + 0.001;
+  const media = mediaEl();
+  try { media.currentTime = srcT; } catch {}
+  syncVideo(srcT, true);
+  state.editedTime = editedStartOf(next);
+  markClipSeek();
+  return true;
+}
+
 function tick() {
   if (!state.playing) return;
+  const clips = ensureClips();
+  if (!clips.length) {
+    pause();
+    return;
+  }
+  let idx = state.playClipIndex ?? 0;
+  if (idx < 0 || idx >= clips.length) idx = 0;
+  const clip = clips[idx];
   const media = mediaEl();
   const src = media.currentTime;
-  const ranges = keepRanges();
-  const inside = ranges.find(([a, b]) => src >= a - 0.01 && src < b);
-  if (!inside) {
-    const next = ranges.find(([a]) => a > src);
-    if (next) media.currentTime = next[0] + 0.001;
-    else {
-      pause();
-      state.editedTime = editedDuration();
-      setPlayhead();
-      return;
-    }
+  const slop = 0.05;
+  const inside = src >= clip.start - slop && src <= clip.end + slop;
+  const seeking = performance.now() < (state.clipSeekUntil || 0);
+
+  if (seeking && !inside) {
+    const offset = Math.min(clip.duration - 0.001, Math.max(0, state.editedTime - editedStartOf(idx)));
+    const pinned = clip.start + offset;
+    try { media.currentTime = pinned; } catch {}
+    syncVideo(pinned, true);
+  } else if (inside && src < clip.end - 0.015) {
+    if (seeking) state.clipSeekUntil = 0;
+    state.playClipIndex = idx;
+    state.editedTime = editedStartOf(idx) + Math.max(0, Math.min(clip.duration, src - clip.start));
+    syncVideo(src);
+  } else if (!seeking && src >= clip.end - 0.02 && src <= clip.end + 0.3) {
+    if (!advancePlayClip(idx)) return;
+  } else if (!seeking) {
+    const offset = Math.min(clip.duration - 0.001, Math.max(0, state.editedTime - editedStartOf(idx)));
+    const pinned = clip.start + offset;
+    try { media.currentTime = pinned; } catch {}
+    syncVideo(pinned, true);
   }
-  state.editedTime = sourceToEdited(media.currentTime);
+
   setPlayhead();
-  highlightWord(media.currentTime);
+  const playing = clips[state.playClipIndex];
+  highlightWord(playing ? playing.start + (state.editedTime - editedStartOf(state.playClipIndex)) : -1, playing?.id);
   state.raf = requestAnimationFrame(tick);
 }
 
-function highlightWord(src) {
+function highlightWord(src, clipId) {
   const t = Number(src);
   let hitId = null;
-  if (Number.isFinite(t)) {
+  if (Number.isFinite(t) && t >= 0) {
     for (const w of keepWords()) {
       const s = Number(w.cut_start ?? w.start);
       const e = Number(w.cut_end ?? w.end);
@@ -646,7 +738,9 @@ function highlightWord(src) {
     }
   }
   for (const el of wordsEl.querySelectorAll(".chip")) {
-    el.classList.toggle("active", hitId !== null && Number(el.dataset.id) === hitId);
+    const wordMatch = hitId !== null && Number(el.dataset.id) === hitId;
+    const clipMatch = !clipId || !el.dataset.clipId || el.dataset.clipId === String(clipId);
+    el.classList.toggle("active", wordMatch && clipMatch);
   }
 }
 
@@ -680,15 +774,23 @@ function play(fromStart = false) {
   if (fromStart || (dur > 0 && state.editedTime >= dur - 0.02)) {
     state.editedTime = 0;
   }
+  const pos = clipAtEditedTime(state.editedTime);
+  if (!pos || pos.pastEnd) {
+    state.editedTime = 0;
+  }
+  const start = clipAtEditedTime(state.editedTime);
+  if (!start) return;
+  state.playClipIndex = start.i;
+  markClipSeek();
+  const srcT = start.clip.start + start.offset;
   const media = mediaEl();
   try {
-    media.currentTime = editedToSource(state.editedTime);
+    media.currentTime = srcT;
   } catch {}
+  syncVideo(srcT, true);
   if (state.project?.kind === "video" && videoEl.src) {
-    try {
-      videoEl.currentTime = editedToSource(state.editedTime);
-      videoEl.play().catch(() => {});
-    } catch {}
+    videoEl.muted = true;
+    videoEl.play().catch(() => {});
   }
   const kick = media.play();
   state.playing = true;
@@ -715,18 +817,21 @@ function seekEdited(t) {
   const edited = editedDuration();
   const view = viewDuration();
   state.editedTime = Math.max(0, Math.min(view, Number(t) || 0));
+  const inTail = state.editedTime >= edited - 0.001;
+  const pos = clipAtEditedTime(inTail ? Math.max(0, edited - 0.001) : state.editedTime);
+  let srcT = 0;
+  if (pos) {
+    srcT = pos.clip.start + Math.min(pos.offset, Math.max(0, pos.clip.duration - 0.001));
+    state.playClipIndex = pos.i;
+    markClipSeek();
+  }
   const media = mediaEl();
   if (media.src) {
-    const srcT = state.editedTime >= edited - 0.001
-      ? editedToSource(Math.max(0, edited - 0.001))
-      : editedToSource(state.editedTime);
     try { media.currentTime = srcT; } catch {}
-    if (state.project?.kind === "video" && videoEl.src) {
-      try { videoEl.currentTime = srcT; } catch {}
-    }
   }
+  syncVideo(srcT, true);
   setPlayhead();
-  highlightWord(state.editedTime >= edited - 0.001 ? -1 : editedToSource(state.editedTime));
+  highlightWord(inTail ? -1 : srcT, pos?.clip?.id);
 }
 
 function pickFile() {
@@ -767,7 +872,16 @@ wordsEl.addEventListener("click", (e) => {
   if (!chip || !state.project) return;
   const w = state.project.words.find((x) => x.id === Number(chip.dataset.id));
   if (!w) return;
-  seekEdited(sourceToEdited(w.start));
+  const clipId = chip.dataset.clipId;
+  const clipIdx = ensureClips().findIndex((c) => c.id === clipId);
+  if (clipIdx >= 0) {
+    const clip = state.clips[clipIdx];
+    const wordStart = Number(w.cut_start ?? w.start);
+    const offset = Math.max(0, Math.min(clip.duration - 0.001, wordStart - clip.start));
+    seekEdited(editedStartOf(clipIdx) + offset);
+  } else {
+    seekEdited(0);
+  }
   play(false);
 });
 
@@ -837,8 +951,8 @@ $("project-name").onclick = async () => {
 };
 
 async function splitAtPlayhead() {
-  if (!state.project?.id || !hasWords()) return;
-  const src = editedToSource(state.editedTime);
+  if (!state.project?.id || !hasClips()) return;
+  const src = sourceAtEdited(state.editedTime);
   try {
     const updated = await api(`/api/projects/${state.project.id}/split`, {
       method: "POST",
@@ -1009,6 +1123,23 @@ function setupTimelineInteractions() {
     return pct * viewDuration();
   }
 
+  let edgeRaf = 0;
+
+  function stopEdgeScroll() {
+    if (edgeRaf) {
+      cancelAnimationFrame(edgeRaf);
+      edgeRaf = 0;
+    }
+  }
+
+  function nearScrollEdge(clientX) {
+    const wrap = $("timeline-scroll-wrap");
+    if (!wrap) return false;
+    const rect = wrap.getBoundingClientRect();
+    const edge = 40;
+    return clientX > rect.right - edge || clientX < rect.left + edge;
+  }
+
   function autoScrollForScrub(clientX) {
     const wrap = $("timeline-scroll-wrap");
     if (!wrap) return;
@@ -1019,6 +1150,18 @@ function setupTimelineInteractions() {
     } else if (clientX < rect.left + edge) {
       wrap.scrollLeft -= Math.max(8, (rect.left + edge - clientX) * 0.6);
     }
+  }
+
+  function startEdgeScrollLoop() {
+    if (edgeRaf) return;
+    const loop = () => {
+      edgeRaf = 0;
+      if (!dragging || dragging.type !== "playhead" || dragging.lastX == null) return;
+      autoScrollForScrub(dragging.lastX);
+      seekEdited(timeFromClientX(dragging.lastX));
+      if (nearScrollEdge(dragging.lastX)) startEdgeScrollLoop();
+    };
+    edgeRaf = requestAnimationFrame(loop);
   }
 
   function hitFromPoint(e, selector) {
@@ -1040,19 +1183,30 @@ function setupTimelineInteractions() {
   }
 
   function scrubToClientX(clientX) {
+    if (dragging && dragging.type === "playhead") dragging.lastX = clientX;
     autoScrollForScrub(clientX);
     seekEdited(timeFromClientX(clientX));
+    if (nearScrollEdge(clientX)) startEdgeScrollLoop();
   }
 
   function startPlayheadDrag(e) {
     if (state.playing) pause();
     document.body.classList.add("scrubbing");
-    dragging = { type: "playhead" };
+    dragging = {
+      type: "playhead",
+      pointerId: e.pointerId,
+      lastX: e.clientX,
+      capEl: e.currentTarget || $("timeline-container"),
+    };
+    try {
+      if (e.pointerId != null) dragging.capEl?.setPointerCapture?.(e.pointerId);
+    } catch {}
+    if (e.cancelable) e.preventDefault();
     scrubToClientX(e.clientX);
   }
 
   function onPointerDown(e) {
-    if (e.button !== 0 && e.pointerType === "mouse") return;
+    if (e.button !== 0) return;
     if (!state.project || !hasClips()) return;
 
     if (hitFromPoint(e, ".clip-add-end") || e.target.closest(".clip-add-end")) {
@@ -1121,10 +1275,6 @@ function setupTimelineInteractions() {
 
   function onDragMove(e) {
     if (!dragging || !state.project) return;
-    if (dragging.type === "playhead" && e.type === "mousemove" && e.buttons === 0) {
-      onDragUp(e);
-      return;
-    }
 
     if (dragging.type === "playhead") {
       if (e.cancelable) e.preventDefault();
@@ -1168,8 +1318,16 @@ function setupTimelineInteractions() {
     const cur = dragging;
     dragging = null;
     document.body.classList.remove("scrubbing", "trimming-clip");
+    stopEdgeScroll();
 
-    if (cur.type === "playhead") return;
+    if (cur.type === "playhead") {
+      try {
+        if (cur.pointerId != null && cur.capEl?.hasPointerCapture?.(cur.pointerId)) {
+          cur.capEl.releasePointerCapture(cur.pointerId);
+        }
+      } catch {}
+      return;
+    }
 
     if (cur.type === "clip-move") {
       cur.clipEl.classList.remove("dragging");
@@ -1200,11 +1358,11 @@ function setupTimelineInteractions() {
 
   const container = $("timeline-container");
   if (container) {
-    container.addEventListener("mousedown", onPointerDown);
+    container.addEventListener("pointerdown", onPointerDown);
   }
   const playhead = $("playhead");
   if (playhead) {
-    playhead.addEventListener("mousedown", (e) => {
+    playhead.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
       if (!state.project || !hasClips()) return;
       e.preventDefault();
@@ -1212,9 +1370,7 @@ function setupTimelineInteractions() {
       startPlayheadDrag(e);
     });
   }
-  document.addEventListener("mousemove", onDragMove, true);
-  document.addEventListener("mouseup", onDragUp, true);
-  document.addEventListener("pointermove", onDragMove, true);
+  document.addEventListener("pointermove", onDragMove, { capture: true, passive: false });
   document.addEventListener("pointerup", onDragUp, true);
   document.addEventListener("pointercancel", onDragUp, true);
 }
@@ -1243,6 +1399,7 @@ $("clip-file").onchange = async () => {
     }
     const updated = await res.json();
     applyProject(updated);
+    attachMedia(updated, true);
   } catch (err) {
     alert("Failed to add clip: " + err.message);
   } finally {
@@ -1302,8 +1459,12 @@ document.addEventListener("drop", (e) => {
 });
 
 audioEl.addEventListener("ended", () => {
+  if (state.playing && advancePlayClip(state.playClipIndex ?? 0)) {
+    audioEl.play().catch(() => pause());
+    return;
+  }
   pause();
-  state.editedTime = 0;
+  state.editedTime = editedDuration();
   highlightWord(-1);
   setPlayhead();
 });
@@ -1457,6 +1618,7 @@ async function createWorkspace() {
   state.project = null;
   state.selectedClipId = null;
   state.clips = [];
+  state.playClipIndex = 0;
   audioEl.removeAttribute("src");
   videoEl.removeAttribute("src");
   state.editedTime = 0;

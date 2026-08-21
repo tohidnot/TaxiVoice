@@ -815,54 +815,12 @@ def trim_clip(pid: str, body: ClipTrimBody):
         raise HTTPException(400, "clip too short")
 
     _push_undo(meta)
-    words = meta.get("words") or []
-    deleted = set(meta.get("deleted") or [])
-
-    if new_in > old_in + 0.001:
-        for w in words:
-            s, e = _word_span(w)
-            if e <= old_in + 0.005 or s >= new_in - 0.005:
-                continue
-            if e <= new_in + 0.02:
-                deleted.add(int(w["id"]))
-            else:
-                w["cut_start"] = round(new_in, 4)
-                deleted.discard(int(w["id"]))
-    elif new_in < old_in - 0.001:
-        for w in words:
-            orig_s, orig_e = float(w["start"]), float(w["end"])
-            if orig_e <= new_in + 0.005 or orig_s >= old_in - 0.005:
-                continue
-            deleted.discard(int(w["id"]))
-            w["cut_start"] = round(max(orig_s, new_in), 4)
-            w["cut_end"] = round(min(orig_e, old_out), 4)
-
-    if new_out < old_out - 0.001:
-        for w in words:
-            s, e = _word_span(w)
-            if e <= new_out + 0.005 or s >= old_out - 0.005:
-                continue
-            if s >= new_out - 0.02:
-                deleted.add(int(w["id"]))
-            else:
-                w["cut_end"] = round(new_out, 4)
-                deleted.discard(int(w["id"]))
-    elif new_out > old_out + 0.001:
-        for w in words:
-            orig_s, orig_e = float(w["start"]), float(w["end"])
-            if orig_e <= old_out + 0.005 or orig_s >= new_out - 0.005:
-                continue
-            deleted.discard(int(w["id"]))
-            w["cut_start"] = round(max(orig_s, old_in), 4)
-            w["cut_end"] = round(min(orig_e, new_out), 4)
-
     c["in"] = round(new_in, 4)
     c["out"] = round(new_out, 4)
     c["origin_in"] = 0.0
     c["origin_out"] = source_dur
     clips[idx] = c
     meta["clips"] = clips
-    meta["deleted"] = sorted(deleted)
     meta["needs_retranscribe"] = True
     _save(meta)
     return _public(meta)
@@ -876,13 +834,6 @@ def delete_clip(pid: str, body: ClipIdBody):
     if not clip:
         raise HTTPException(404, "clip not found")
     _push_undo(meta)
-    cin, cout = float(clip["in"]), float(clip["out"])
-    deleted = set(meta.get("deleted") or [])
-    for w in meta.get("words") or []:
-        s, e = _word_span(w)
-        if e > cin and s < cout:
-            deleted.add(int(w["id"]))
-    meta["deleted"] = sorted(deleted)
     meta["clips"] = [c for c in clips if c["id"] != body.id]
     meta["needs_retranscribe"] = True
     _save(meta)
