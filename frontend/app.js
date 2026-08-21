@@ -12,6 +12,7 @@ const state = {
   clips: [],
   retranscribeDismissed: false,
   clipboard: null,
+  soloClipIndex: null,
 };
 
 const chatEl = $("chat");
@@ -200,23 +201,38 @@ function wordsForChips() {
   return ordered;
 }
 
+function clipPlayButtonHtml(idx) {
+  return `<button type="button" class="chip-play" data-play-clip="${idx}" title="Play clip">
+    <svg class="icon-play" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+    <svg class="icon-pause" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.2"/><rect x="14" y="5" width="4" height="14" rx="1.2"/></svg>
+  </button>`;
+}
+
 function renderWords() {
-  const p = state.project;
-  const words = Array.isArray(p?.words) ? p.words : [];
-  if (!words.length) {
-    $("btn-play-inline").hidden = true;
+  const clips = state.project ? buildClips() : [];
+  if (!clips.length) {
     wordsEl.innerHTML = "";
     return;
   }
-  const visible = wordsForChips();
-  wordsEl.className = "words";
-  wordsEl.innerHTML = visible
-    .map(
-      (w) =>
-        `<button type="button" class="chip" data-id="${w.id}" data-clip-id="${w.clipId || ""}"><span>${escapeHtml(w.word)}</span><span class="x" data-del="${w.id}" title="Delete word">×</span></button>`
-    )
+  if (state.soloClipIndex != null && (state.soloClipIndex < 0 || state.soloClipIndex >= clips.length)) {
+    state.soloClipIndex = null;
+  }
+  wordsEl.className = "transcripts";
+  wordsEl.innerHTML = clips
+    .map((c, i) => {
+      const chips = wordsInSpan(c.start, c.end)
+        .map(
+          (w) =>
+            `<button type="button" class="chip" data-id="${w.id}" data-clip-id="${c.id}"><span>${escapeHtml(w.word)}</span><span class="x" data-del="${w.id}" title="Delete word">×</span></button>`
+        )
+        .join("");
+      return `<div class="clip-transcript" data-clip-id="${c.id}" data-clip-index="${i}">
+        ${clipPlayButtonHtml(i)}
+        <div class="words">${chips || `<span class="empty-clip-hint">No words in this clip</span>`}</div>
+      </div>`;
+    })
     .join("");
-  $("btn-play-inline").hidden = false;
+  setPlayingUi(state.playing);
 }
 
 function wordsInSpan(start, end) {
@@ -615,6 +631,7 @@ async function importFile(file) {
     const p = await api("/api/projects/import", { method: "POST", body: fd });
     state.editedTime = 0;
     state.playClipIndex = 0;
+    state.soloClipIndex = null;
     state.importing = false;
     applyProject(p);
     attachMedia(p, true);
@@ -662,8 +679,21 @@ function markClipSeek() {
   state.clipSeekUntil = performance.now() + 180;
 }
 
+function clipPlayEnd(idx) {
+  const clips = ensureClips();
+  const clip = clips[idx];
+  pause();
+  state.editedTime = clip ? editedStartOf(idx) + clip.duration : editedDuration();
+  highlightWord(-1);
+  setPlayhead();
+}
+
 function advancePlayClip(fromIdx) {
   const clips = ensureClips();
+  if (state.soloClipIndex != null) {
+    clipPlayEnd(fromIdx);
+    return false;
+  }
   const next = fromIdx + 1;
   if (next >= clips.length) {
     pause();
@@ -680,7 +710,14 @@ function advancePlayClip(fromIdx) {
   syncVideo(srcT, true);
   state.editedTime = editedStartOf(next);
   markClipSeek();
+  revealPlayingTranscript();
+  setPlayingUi(true);
   return true;
+}
+
+function revealPlayingTranscript() {
+  const row = wordsEl.querySelector(`.clip-transcript[data-clip-index="${state.playClipIndex}"]`);
+  if (row) row.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 
 function tick() {
@@ -754,35 +791,58 @@ function setPlayingUi(on) {
     btnPlay.title = isPlaying ? "Pause" : "Play";
   }
 
-  const btnPlayInline = $("btn-play-inline");
-  if (btnPlayInline) {
-    btnPlayInline.classList.toggle("is-playing", isPlaying);
-    btnPlayInline.title = isPlaying ? "Pause" : "Play";
-  }
-
   const btnVideoPlay = $("btn-video-play");
   if (btnVideoPlay) {
     btnVideoPlay.classList.toggle("is-playing", isPlaying);
     btnVideoPlay.title = isPlaying ? "Pause" : "Play";
   }
+
+  const currentIdx = state.playClipIndex;
+  const solo = state.soloClipIndex;
+  wordsEl.querySelectorAll(".clip-transcript").forEach((row) => {
+    const idx = Number(row.dataset.clipIndex);
+    row.classList.toggle("is-current", isPlaying && idx === currentIdx);
+    const btn = row.querySelector(".chip-play");
+    if (!btn) return;
+    const thisPlaying = isPlaying && solo != null && idx === solo;
+    btn.classList.toggle("is-playing", thisPlaying);
+    btn.title = thisPlaying ? "Pause clip" : "Play clip";
+  });
 }
 
 function play(fromStart = false) {
   if (!hasClips()) return;
   attachMedia(state.project);
-  const dur = editedDuration();
-  if (fromStart || (dur > 0 && state.editedTime >= dur - 0.02)) {
-    state.editedTime = 0;
+  const clips = ensureClips();
+  if (state.soloClipIndex != null && (state.soloClipIndex < 0 || state.soloClipIndex >= clips.length)) {
+    state.soloClipIndex = null;
   }
-  const pos = clipAtEditedTime(state.editedTime);
-  if (!pos || pos.pastEnd) {
-    state.editedTime = 0;
+  const solo = state.soloClipIndex;
+  if (solo != null) {
+    const startT = editedStartOf(solo);
+    const endT = startT + clips[solo].duration;
+    if (fromStart || state.editedTime < startT || state.editedTime >= endT - 0.02) {
+      state.editedTime = startT;
+    }
+    state.playClipIndex = solo;
+  } else {
+    const dur = editedDuration();
+    if (fromStart || (dur > 0 && state.editedTime >= dur - 0.02)) {
+      state.editedTime = 0;
+    }
+    const pos = clipAtEditedTime(state.editedTime);
+    if (!pos || pos.pastEnd) {
+      state.editedTime = 0;
+    }
+    const start = clipAtEditedTime(state.editedTime);
+    if (!start) return;
+    state.playClipIndex = start.i;
   }
-  const start = clipAtEditedTime(state.editedTime);
+  const start = clips[state.playClipIndex];
   if (!start) return;
-  state.playClipIndex = start.i;
+  const offset = Math.max(0, Math.min(start.duration - 0.001, state.editedTime - editedStartOf(state.playClipIndex)));
   markClipSeek();
-  const srcT = start.clip.start + start.offset;
+  const srcT = start.start + offset;
   const media = mediaEl();
   try {
     media.currentTime = srcT;
@@ -796,10 +856,31 @@ function play(fromStart = false) {
   state.playing = true;
   setPlayingUi(true);
   cancelAnimationFrame(state.raf);
+  revealPlayingTranscript();
   tick();
   if (kick && kick.catch) {
     kick.catch(() => pause());
   }
+}
+
+function playAllFromPlayhead(fromStart = false) {
+  state.soloClipIndex = null;
+  play(fromStart);
+}
+
+function playClipSolo(idx) {
+  const clips = ensureClips();
+  if (idx < 0 || idx >= clips.length) return;
+  if (state.playing && state.soloClipIndex === idx) {
+    pause();
+    return;
+  }
+  const startT = editedStartOf(idx);
+  const endT = startT + clips[idx].duration;
+  const inClip = state.soloClipIndex === idx && state.editedTime >= startT && state.editedTime < endT - 0.02;
+  if (!inClip) state.editedTime = startT;
+  state.soloClipIndex = idx;
+  play(false);
 }
 
 function pause() {
@@ -813,7 +894,8 @@ function pause() {
   }
 }
 
-function seekEdited(t) {
+function seekEdited(t, opts = {}) {
+  if (!opts.keepSolo) state.soloClipIndex = null;
   const edited = editedDuration();
   const view = viewDuration();
   state.editedTime = Math.max(0, Math.min(view, Number(t) || 0));
@@ -832,6 +914,7 @@ function seekEdited(t) {
   syncVideo(srcT, true);
   setPlayhead();
   highlightWord(inTail ? -1 : srcT, pos?.clip?.id);
+  if (state.playing) setPlayingUi(true);
 }
 
 function pickFile() {
@@ -862,6 +945,12 @@ $("prompt").addEventListener("keydown", (e) => {
 });
 
 wordsEl.addEventListener("click", (e) => {
+  const playBtn = e.target.closest("[data-play-clip]");
+  if (playBtn) {
+    e.stopPropagation();
+    playClipSolo(Number(playBtn.dataset.playClip));
+    return;
+  }
   const del = e.target.closest("[data-del]");
   if (del) {
     e.stopPropagation();
@@ -878,23 +967,17 @@ wordsEl.addEventListener("click", (e) => {
     const clip = state.clips[clipIdx];
     const wordStart = Number(w.cut_start ?? w.start);
     const offset = Math.max(0, Math.min(clip.duration - 0.001, wordStart - clip.start));
-    seekEdited(editedStartOf(clipIdx) + offset);
+    state.soloClipIndex = clipIdx;
+    seekEdited(editedStartOf(clipIdx) + offset, { keepSolo: true });
   } else {
+    state.soloClipIndex = null;
     seekEdited(0);
   }
   play(false);
 });
 
-$("btn-play").onclick = () => (state.playing ? pause() : play(false));
-$("btn-play-inline").onclick = () => {
-  if (state.playing) {
-    pause();
-  } else {
-    const atEnd = editedDuration() > 0 && state.editedTime >= editedDuration() - 0.05;
-    play(atEnd);
-  }
-};
-$("btn-video-play").onclick = () => (state.playing ? pause() : play(false));
+$("btn-play").onclick = () => (state.playing ? pause() : playAllFromPlayhead(false));
+$("btn-video-play").onclick = () => (state.playing ? pause() : playAllFromPlayhead(false));
 $("btn-back").onclick = () => seekEdited(state.editedTime - 3);
 $("btn-fwd").onclick = () => seekEdited(state.editedTime + 3);
 
@@ -1507,7 +1590,7 @@ window.addEventListener("keydown", (e) => {
       document.activeElement.blur();
     }
     if (hasClips()) {
-      state.playing ? pause() : play(false);
+      state.playing ? pause() : playAllFromPlayhead(false);
     }
   } else if ((e.key === "s" || e.key === "S") && !mod) {
     e.preventDefault();
@@ -1619,6 +1702,7 @@ async function createWorkspace() {
   state.selectedClipId = null;
   state.clips = [];
   state.playClipIndex = 0;
+  state.soloClipIndex = null;
   audioEl.removeAttribute("src");
   videoEl.removeAttribute("src");
   state.editedTime = 0;
@@ -1631,6 +1715,8 @@ async function openWorkspace(id) {
   pause();
   const p = await api(`/api/projects/${id}`);
   state.editedTime = 0;
+  state.playClipIndex = 0;
+  state.soloClipIndex = null;
   applyProject(p);
   if (!hasWords()) setStageMode("empty");
   setHistoryOpen(false);

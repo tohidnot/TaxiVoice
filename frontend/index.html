@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=35" />
+  <link rel="stylesheet" href="styles.css?v=36" />
 </head>
 <body>
   <div id="app" class="shell">
@@ -116,11 +116,7 @@
         </div>
         <div class="stage-row" id="stage-row" hidden>
           <div class="words-wrap">
-            <button id="btn-play-inline" class="chip-play" title="Play from start" type="button">
-              <svg class="icon-play" id="icon-play-inline" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-              <svg class="icon-pause" id="icon-pause-inline" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.2"/><rect x="14" y="5" width="4" height="14" rx="1.2"/></svg>
-            </button>
-            <div id="words" class="words"></div>
+            <div id="words" class="transcripts"></div>
           </div>
           <aside id="video-pane" class="video-pane" hidden>
             <div class="video-frame">
@@ -247,6 +243,6 @@
   <input id="file" type="file" accept="audio/*,video/*,.mp3,.wav,.m4a,.mp4,.mov,.mkv" hidden />
   <input id="clip-file" type="file" accept="audio/*,video/*,.mp3,.wav,.m4a,.mp4,.mov,.mkv" hidden />
   <audio id="audio" preload="auto"></audio>
-  <script src="app.js?v=29"></script>
+  <script src="app.js?v=30"></script>
 </body>
 </html>

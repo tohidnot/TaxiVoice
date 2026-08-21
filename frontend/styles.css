@@ -493,7 +493,25 @@ button:focus-visible {
 }
 .stage-row.has-video { grid-template-columns: 1fr 340px; }
 
-.words-wrap { display: flex; gap: 10px; align-items: flex-start; }
+.words-wrap { min-width: 0; }
+.transcripts {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.clip-transcript + .clip-transcript {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid #f0eef0;
+}
+.clip-transcript {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.clip-transcript.is-current .chip-play {
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.28);
+}
 .chip-play {
   flex: 0 0 32px;
   width: 32px;
@@ -512,11 +530,15 @@ button:focus-visible {
   flex-wrap: wrap;
   gap: 10px;
   align-content: flex-start;
+  min-width: 0;
+  flex: 1;
 }
-.empty-words .hint {
+.empty-words .hint,
+.empty-clip-hint {
   color: var(--muted);
   font-size: 14px;
   max-width: 420px;
+  padding: 8px 0;
 }
 .chip {
   display: inline-flex;
