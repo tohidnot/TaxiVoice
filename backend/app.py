@@ -86,7 +86,7 @@ def _empty_session(name: str = "New chat") -> dict:
         "messages": [
             {
                 "role": "assistant",
-                "text": "This is a new workspace. Drop an audio or video file to transcribe it.",
+                "text": "This is a new workspace. Attach an audio or video file in the prompt, then tell me what to edit.",
             }
         ],
     }
@@ -323,7 +323,11 @@ def delete_project(pid: str):
 
 
 @app.post("/api/projects/import")
-async def import_media(file: UploadFile = File(...), session_id: str | None = Form(None)):
+async def import_media(
+    file: UploadFile = File(...),
+    session_id: str | None = Form(None),
+    silent: str | None = Form(None),
+):
     if not have_parakeet():
         raise HTTPException(500, "Parakeet v3 is not installed on this Mac")
 
@@ -383,21 +387,17 @@ async def import_media(file: UploadFile = File(...), session_id: str | None = Fo
 
     name = Path(file.filename or "Untitled").stem.replace("_", " ")[:48]
     prior_msgs = list((existing or {}).get("messages") or [])
-    prior_msgs.append(
-        {
-            "role": "user",
-            "text": f"Import {file.filename}",
-        }
-    )
-    prior_msgs.append(
-        {
-            "role": "assistant",
-            "text": (
-                f"Transcribed {len(words)} words with Parakeet v3. "
-                "Delete any word, or ask me to remove fillers and repeats."
-            ),
-        }
-    )
+    quiet = str(silent or "").strip().lower() in {"1", "true", "yes"}
+    if not quiet:
+        prior_msgs.append(
+            {
+                "role": "assistant",
+                "text": (
+                    f"Transcribed {len(words)} words with Parakeet v3. "
+                    "Delete any word, or ask me to remove fillers and repeats."
+                ),
+            }
+        )
     meta = {
         "id": pid,
         "name": name or "Untitled",

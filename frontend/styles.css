@@ -9,6 +9,7 @@
   --sidebar: #f4f4f5;
   --bg: #ffffff;
   --sidebar-w: 340px;
+  --chat-rail-w: 14px;
   --shadow: 0 1px 2px rgba(16, 16, 20, 0.05);
   font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
@@ -45,11 +46,29 @@ button:focus-visible {
   overflow: hidden;
 }
 .shell.chat-collapsed {
-  grid-template-columns: 1fr;
+  grid-template-columns: var(--chat-rail-w, 14px) 1fr;
 }
 .shell.resizing { cursor: col-resize; user-select: none; }
 .shell.chat-collapsed .sidebar,
 .shell.chat-collapsed .resizer { display: none !important; }
+.chat-rail {
+  display: none;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: #fff;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.shell.chat-collapsed .chat-rail {
+  display: block !important;
+}
+.chat-rail:hover {
+  background: #fafafa;
+}
 
 /* Sidebar */
 .sidebar {
@@ -268,6 +287,71 @@ button:focus-visible {
   position: relative;
   z-index: 10;
 }
+.composer-attach {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 2px 2px;
+}
+.attach-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-width: 0;
+  background: #f4f4f6;
+  border: 1px solid #e4e4e8;
+  border-radius: 12px;
+  padding: 7px 6px 7px 10px;
+}
+.attach-file-icon {
+  flex: 0 0 auto;
+  color: #5b5b61;
+  display: grid;
+  place-items: center;
+}
+.attach-meta {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.attach-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.attach-size {
+  font-size: 11px;
+  color: #8a8a90;
+}
+.attach-clear {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #6b6b70;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+.attach-clear:hover {
+  background: #ececee;
+  color: #111;
+}
+.attach-btn.has-file {
+  background: #f0f0f2;
+  color: #111;
+}
 .composer:focus-within {
   border-color: #d1d1d6;
   box-shadow: 0 4px 16px rgba(0,0,0,0.06);
@@ -375,7 +459,7 @@ button:focus-visible {
   -webkit-app-region: drag;
 }
 .shell.chat-collapsed .topbar {
-  padding-left: 84px;
+  padding-left: calc(84px - var(--chat-rail-w));
 }
 .expand-chat {
   flex: 0 0 28px;

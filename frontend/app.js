@@ -1,7 +1,5 @@
 const $ = (id) => document.getElementById(id);
 
-const TIMELINE_PAD_LEFT = 32;
-
 const state = {
   project: null,
   playing: false,
@@ -16,6 +14,7 @@ const state = {
   retranscribeDismissed: false,
   clipboard: null,
   soloClipIndex: null,
+  pendingFile: null,
 };
 
 const chatEl = $("chat");
@@ -142,7 +141,7 @@ function renderChat() {
   const msgs = state.project?.messages || [
     {
       role: "assistant",
-      text: "Drop an audio or video file and I’ll transcribe it into words you can edit.",
+      text: "Attach an audio or video file in the prompt, then tell me what to edit.",
     },
   ];
   chatEl.innerHTML = msgs
@@ -322,7 +321,7 @@ function buildClips() {
 function getTimelineWidth() {
   const wrap = $("timeline-scroll-wrap");
   const baseW = wrap ? wrap.clientWidth : 800;
-  const usable = Math.max(120, baseW - TIMELINE_PAD_LEFT);
+  const usable = Math.max(120, baseW);
   return Math.max(usable, usable * state.zoomLevel);
 }
 
@@ -388,7 +387,7 @@ function renderRuler() {
   const w = getTimelineWidth();
   const content = $("timeline-content");
   if (content) {
-    content.style.width = `${TIMELINE_PAD_LEFT + w}px`;
+    content.style.width = `${w}px`;
     content.classList.toggle("has-filmstrip", state.project?.kind === "video");
   }
 
@@ -398,7 +397,7 @@ function renderRuler() {
   const ticks = [];
   const limit = dur + 0.001;
   for (let t = 0, i = 0; t <= limit; t = Math.round((t + minor) * 1000) / 1000, i++) {
-    const x = TIMELINE_PAD_LEFT + (t / dur) * w;
+    const x = (t / dur) * w;
     const isMajor = Math.abs((t / major) - Math.round(t / major)) < 0.02;
     const label = isMajor ? `<span>${fmt(t)}</span>` : "";
     ticks.push(
@@ -433,7 +432,7 @@ function renderClips() {
   }
 
   const html = clips.map((c, i) => {
-    const leftPx = TIMELINE_PAD_LEFT + accEdited * pps;
+    const leftPx = accEdited * pps;
     const widthPx = Math.max(12, c.duration * pps - gap);
     accEdited += c.duration;
     const isSelected = isClipSelected(c.id);
@@ -456,7 +455,7 @@ function renderClips() {
     `;
   }).join("");
 
-  const plusLeft = TIMELINE_PAD_LEFT + accEdited * pps + (clips.length ? 8 : 12);
+  const plusLeft = accEdited * pps + (clips.length ? 8 : 12);
   container.innerHTML = html + `
     <button type="button" class="clip-add-end" title="Add clip" style="left:${plusLeft.toFixed(1)}px">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
@@ -547,7 +546,7 @@ function setPlayhead() {
   const view = viewDuration();
   const pct = Math.min(1, Math.max(0, state.editedTime / view));
   const timelineW = getTimelineWidth();
-  const phX = TIMELINE_PAD_LEFT + pct * timelineW;
+  const phX = pct * timelineW;
 
   const ph = $("playhead");
   ph.hidden = !hasClips();
@@ -634,33 +633,85 @@ async function api(path, opts) {
   return res;
 }
 
-async function importFile(file) {
+function formatFileSize(n) {
+  const bytes = Number(n) || 0;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
+function isMediaFile(file) {
+  if (!file) return false;
+  const type = file.type || "";
+  if (type.startsWith("audio/") || type.startsWith("video/")) return true;
+  return /\.(mp3|wav|m4a|aac|mp4|mov|mkv|webm)$/i.test(file.name || "");
+}
+
+function setPendingFile(file) {
+  state.pendingFile = file || null;
+  const wrap = $("composer-attach");
+  const nameEl = $("attach-name");
+  const sizeEl = $("attach-size");
+  const attachBtn = $("btn-import");
+  if (!file) {
+    if (wrap) wrap.hidden = true;
+    if (nameEl) nameEl.textContent = "";
+    if (sizeEl) sizeEl.textContent = "";
+    if (attachBtn) attachBtn.classList.remove("has-file");
+    fileEl.value = "";
+    syncSend();
+    return;
+  }
+  if (nameEl) nameEl.textContent = file.name;
+  if (sizeEl) sizeEl.textContent = formatFileSize(file.size);
+  if (wrap) wrap.hidden = false;
+  if (attachBtn) attachBtn.classList.add("has-file");
+  syncSend();
+}
+
+function attachFile(file) {
   if (!file) return;
+  if (!isMediaFile(file)) {
+    alert("Please attach an audio or video file.");
+    return;
+  }
+  setPendingFile(file);
+  setHistoryOpen(false);
+  if ($("app").classList.contains("chat-collapsed")) setChatCollapsed(false);
+  requestAnimationFrame(() => $("prompt")?.focus());
+}
+
+async function importFile(file, { silent = false, userText = "" } = {}) {
+  if (!file) return null;
   const fd = new FormData();
   fd.append("file", file);
+  if (silent) fd.append("silent", "1");
   state.importing = true;
   pause();
-  $("loading-name").textContent = file.name;
+  $("loading-name").textContent = `Transcribing ${file.name}`;
   setStageMode("loading");
   const reuseSession = Boolean(state.project?.id && !hasClips());
   const sessionId = state.project?.id;
+  const prior = Array.isArray(state.project?.messages) ? state.project.messages.slice() : [];
+  const localMsgs = prior.slice();
+  if (userText && !localMsgs.some((m) => m.role === "user" && m.text === userText)) {
+    localMsgs.push({ role: "user", text: userText });
+  }
+  localMsgs.push({
+    role: "assistant",
+    text: "Transcribing with Parakeet v3. This takes a few seconds on first load…",
+  });
   const pending = {
     ...(state.project || { words: [], messages: [] }),
     name: file.name.replace(/\.[^.]+$/, ""),
-    messages: [
-      ...((state.project && state.project.messages) || []),
-      { role: "user", text: `Import ${file.name}` },
-      { role: "assistant", text: "Transcribing with Parakeet v3. This takes a few seconds on first load…" },
-    ],
+    messages: localMsgs,
   };
   if (!Array.isArray(pending.words)) pending.words = [];
   state.project = pending;
   renderChat();
   $("project-name").textContent = pending.name;
   try {
-    if (reuseSession && sessionId) {
-      fd.append("session_id", sessionId);
-    }
+    if (reuseSession && sessionId) fd.append("session_id", sessionId);
     const p = await api("/api/projects/import", { method: "POST", body: fd });
     state.editedTime = 0;
     state.playClipIndex = 0;
@@ -668,11 +719,64 @@ async function importFile(file) {
     state.importing = false;
     applyProject(p);
     attachMedia(p, true);
+    return p;
   } catch (err) {
     state.importing = false;
-    pending.messages.push({ role: "assistant", text: `Could not import: ${err.message}` });
+    pending.messages = [
+      ...prior,
+      { role: "assistant", text: `Could not import: ${err.message}` },
+    ];
     applyProject({ ...pending, words: pending.words || [] });
     setStageMode("empty");
+    throw err;
+  }
+}
+
+async function appendClipFile(file) {
+  if (!file || !state.project?.id) return null;
+  document.body.classList.add("busy");
+  try {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(`/api/projects/${state.project.id}/append`, {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Upload failed");
+    }
+    const updated = await res.json();
+    applyProject(updated);
+    attachMedia(updated, true);
+    return updated;
+  } finally {
+    document.body.classList.remove("busy");
+  }
+}
+
+async function submitComposer(text, file) {
+  const trimmed = (text || "").trim();
+  if (!trimmed && !file) return;
+  if (state.importing) return;
+  try {
+    if (file) {
+      if (hasClips() && state.project?.id) {
+        await appendClipFile(file);
+      } else {
+        await importFile(file, { silent: Boolean(trimmed), userText: trimmed });
+      }
+    }
+    if (trimmed) await sendChat(trimmed);
+  } catch (err) {
+    setPendingFile(file);
+    if (trimmed) {
+      $("prompt").value = text;
+      $("prompt").style.height = "auto";
+      $("prompt").style.height = `${Math.min(120, $("prompt").scrollHeight)}px`;
+    }
+    syncSend();
+    console.error(err);
   }
 }
 
@@ -958,16 +1062,25 @@ $("btn-import").onclick = pickFile;
 $("btn-upload-main").onclick = pickFile;
 fileEl.onchange = () => {
   const f = fileEl.files?.[0];
-  if (f) importFile(f);
+  if (f) attachFile(f);
+};
+$("btn-attach-clear").onclick = (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  setPendingFile(null);
+  $("prompt")?.focus();
 };
 
 $("composer").onsubmit = (e) => {
   e.preventDefault();
   const text = $("prompt").value;
+  const file = state.pendingFile;
+  if (!text.trim() && !file) return;
   $("prompt").value = "";
   $("prompt").style.height = "auto";
+  setPendingFile(null);
   syncSend();
-  sendChat(text);
+  submitComposer(text, file);
 };
 
 $("prompt").addEventListener("keydown", (e) => {
@@ -1212,7 +1325,7 @@ function layoutClipsLive(clipsLayout, pps) {
     const clip = clipsLayout.find((c) => c.id === el.dataset.clipId);
     if (!clip) return;
     const dur = Math.max(0.08, clip.end - clip.start);
-    el.style.left = `${(TIMELINE_PAD_LEFT + acc * pps).toFixed(1)}px`;
+    el.style.left = `${(acc * pps).toFixed(1)}px`;
     el.style.width = `${Math.max(8, dur * pps - gap).toFixed(1)}px`;
     const canvas = el.querySelector(".clip-wave-canvas");
     if (canvas) canvas.style.left = `${(-clip.start * pps).toFixed(2)}px`;
@@ -1220,9 +1333,9 @@ function layoutClipsLive(clipsLayout, pps) {
   });
   const timelineW = getTimelineWidth();
   const content = $("timeline-content");
-  if (content) content.style.width = `${Math.max(timelineW + TIMELINE_PAD_LEFT, TIMELINE_PAD_LEFT + acc * pps + 96).toFixed(1)}px`;
+  if (content) content.style.width = `${Math.max(timelineW, acc * pps + 96).toFixed(1)}px`;
   const plus = document.querySelector(".clip-add-end");
-  if (plus) plus.style.left = `${(TIMELINE_PAD_LEFT + acc * pps + 8).toFixed(1)}px`;
+  if (plus) plus.style.left = `${(acc * pps + 8).toFixed(1)}px`;
 }
 
 function setupTimelineInteractions() {
@@ -1233,7 +1346,7 @@ function setupTimelineInteractions() {
     if (!wrap) return 0;
     const rect = wrap.getBoundingClientRect();
     const w = Math.max(1, getTimelineWidth());
-    const x = wrap.scrollLeft + (clientX - rect.left) - TIMELINE_PAD_LEFT;
+    const x = wrap.scrollLeft + (clientX - rect.left);
     const pct = Math.max(0, Math.min(1, x / w));
     return pct * viewDuration();
   }
@@ -1628,25 +1741,10 @@ $("clip-file").onchange = async () => {
   const f = $("clip-file").files?.[0];
   if (!f || !state.project) return;
   $("clip-file").value = "";
-  document.body.classList.add("busy");
   try {
-    const fd = new FormData();
-    fd.append("file", f);
-    const res = await fetch(`/api/projects/${state.project.id}/append`, {
-      method: "POST",
-      body: fd,
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || "Upload failed");
-    }
-    const updated = await res.json();
-    applyProject(updated);
-    attachMedia(updated, true);
+    await appendClipFile(f);
   } catch (err) {
     alert("Failed to add clip: " + err.message);
-  } finally {
-    document.body.classList.remove("busy");
   }
 };
 
@@ -1698,7 +1796,7 @@ document.addEventListener("drop", (e) => {
   e.preventDefault();
   $("dropzone").classList.remove("drag");
   const f = e.dataTransfer?.files?.[0];
-  if (f) importFile(f);
+  if (f) attachFile(f);
 });
 
 audioEl.addEventListener("ended", () => {
@@ -1781,8 +1879,10 @@ function applySidebarWidth(px) {
 function setChatCollapsed(on) {
   $("app").classList.toggle("chat-collapsed", on);
   $("btn-expand").hidden = !on;
+  $("chat-rail").hidden = !on;
   $("btn-collapse").title = "Collapse chat";
   $("btn-expand").title = "Open chat";
+  $("chat-rail").title = "Open chat";
   localStorage.setItem("tv-chat-collapsed", on ? "1" : "0");
   requestAnimationFrame(() => {
     renderRuler();
@@ -1793,6 +1893,7 @@ function setChatCollapsed(on) {
 
 $("btn-collapse").onclick = () => setChatCollapsed(true);
 $("btn-expand").onclick = () => setChatCollapsed(false);
+$("chat-rail").onclick = () => setChatCollapsed(false);
 
 (() => {
   const saved = Number(localStorage.getItem("tv-sidebar-w"));
@@ -1816,7 +1917,7 @@ $("resizer").addEventListener("mousedown", (e) => {
 });
 
 function syncSend() {
-  $("btn-send").disabled = !$("prompt").value.trim();
+  $("btn-send").disabled = !$("prompt").value.trim() && !state.pendingFile;
 }
 $("prompt").addEventListener("input", () => {
   const el = $("prompt");
@@ -1877,6 +1978,7 @@ async function createWorkspace() {
   audioEl.removeAttribute("src");
   videoEl.removeAttribute("src");
   state.editedTime = 0;
+  setPendingFile(null);
   applyProject(null);
   setStageMode("empty");
   setHistoryOpen(false);
@@ -1890,6 +1992,7 @@ async function openWorkspace(id) {
   state.soloClipIndex = null;
   state.selectedClipId = null;
   state.selectedClipIds = [];
+  setPendingFile(null);
   applyProject(p);
   if (!hasWords()) setStageMode("empty");
   setHistoryOpen(false);
