@@ -23,6 +23,12 @@ const fileEl = $("file");
 const audioEl = $("audio");
 const videoEl = $("video");
 
+const SIDEBAR_MIN = 340;
+const SIDEBAR_MAX = 520;
+const TIMELINE_H_MIN = 132;
+const TIMELINE_H_MIN_VIDEO = 180;
+const TIMELINE_STAGE_MIN = 140;
+
 function fmt(t) {
   t = Math.max(0, t || 0);
   const m = Math.floor(t / 60);
@@ -371,6 +377,10 @@ function renderMeta() {
   $("video-pane").hidden = !videoMode;
   document.querySelector(".stage-row").classList.toggle("has-video", videoMode);
   $("filmstrip-wrap").hidden = !videoMode;
+  document.documentElement.style.setProperty("--filmstrip-h", videoMode ? "48px" : "0px");
+  const minH = videoMode ? TIMELINE_H_MIN_VIDEO : TIMELINE_H_MIN;
+  const curH = currentTimelineHeight();
+  if (curH < minH) applyTimelineHeight(minH);
   if (videoMode) renderFilmstrip();
   renderRuler();
   renderClips();
@@ -1866,14 +1876,65 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
-const SIDEBAR_MIN = 260;
-const SIDEBAR_MAX = 520;
-
 function applySidebarWidth(px) {
   const w = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, px));
   document.documentElement.style.setProperty("--sidebar-w", `${w}px`);
   localStorage.setItem("tv-sidebar-w", String(w));
   return w;
+}
+
+function timelineMinHeight() {
+  return state.project?.kind === "video" ? TIMELINE_H_MIN_VIDEO : TIMELINE_H_MIN;
+}
+
+function currentTimelineHeight() {
+  const raw = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--timeline-h"));
+  return Number.isFinite(raw) && raw > 0 ? raw : timelineMinHeight();
+}
+
+function timelineMaxHeight() {
+  const controls = $("transport-controls");
+  const bar = $("retranscribe-bar");
+  const resizer = $("timeline-resizer");
+  const chrome =
+    52 +
+    (controls ? controls.offsetHeight : 60) +
+    (bar && !bar.hidden ? bar.offsetHeight : 0) +
+    (resizer ? resizer.offsetHeight : 12);
+  return Math.max(timelineMinHeight(), window.innerHeight - chrome - TIMELINE_STAGE_MIN);
+}
+
+function applyTimelineHeight(px) {
+  const h = Math.min(timelineMaxHeight(), Math.max(timelineMinHeight(), Math.round(px)));
+  document.documentElement.style.setProperty("--timeline-h", `${h}px`);
+  localStorage.setItem("tv-timeline-h", String(h));
+  return h;
+}
+
+function isTimelineCollapsed() {
+  return Boolean($("transport")?.classList.contains("timeline-collapsed"));
+}
+
+function setTimelineCollapsed(on) {
+  const transport = $("transport");
+  if (!transport) return;
+  transport.classList.toggle("timeline-collapsed", on);
+  const btn = $("btn-timeline-collapse");
+  const resizer = $("timeline-resizer");
+  if (btn) {
+    btn.title = on ? "Expand timeline" : "Collapse timeline";
+    btn.setAttribute("aria-label", on ? "Expand timeline" : "Collapse timeline");
+    btn.setAttribute("aria-expanded", on ? "false" : "true");
+  }
+  if (resizer) {
+    resizer.title = on ? "Click to restore the timeline" : "Drag up to make the timeline taller";
+  }
+  localStorage.setItem("tv-timeline-collapsed", on ? "1" : "0");
+  requestAnimationFrame(() => {
+    renderRuler();
+    renderClips();
+    setPlayhead();
+  });
 }
 
 function setChatCollapsed(on) {
@@ -1891,11 +1952,19 @@ function setChatCollapsed(on) {
 
 $("btn-collapse").onclick = () => setChatCollapsed(true);
 $("btn-expand").onclick = () => setChatCollapsed(false);
+$("btn-timeline-collapse").onclick = (e) => {
+  e.stopPropagation();
+  setTimelineCollapsed(!isTimelineCollapsed());
+};
 
 (() => {
   const saved = Number(localStorage.getItem("tv-sidebar-w"));
   if (saved) applySidebarWidth(saved);
+  else applySidebarWidth(SIDEBAR_MIN);
   if (localStorage.getItem("tv-chat-collapsed") === "1") setChatCollapsed(true);
+  const savedH = Number(localStorage.getItem("tv-timeline-h"));
+  if (savedH) applyTimelineHeight(savedH);
+  if (localStorage.getItem("tv-timeline-collapsed") === "1") setTimelineCollapsed(true);
 })();
 
 $("resizer").addEventListener("mousedown", (e) => {
@@ -1908,10 +1977,63 @@ $("resizer").addEventListener("mousedown", (e) => {
     $("app").classList.remove("resizing");
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
+    requestAnimationFrame(() => {
+      renderRuler();
+      renderClips();
+      setPlayhead();
+    });
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
 });
+
+$("timeline-resizer").addEventListener("mousedown", (e) => {
+  if (e.button !== 0) return;
+  if (e.target.closest("#btn-timeline-collapse")) return;
+  if (isTimelineCollapsed()) {
+    e.preventDefault();
+    setTimelineCollapsed(false);
+    return;
+  }
+  e.preventDefault();
+  $("app").classList.add("row-resizing");
+  const startY = e.clientY;
+  const startH = currentTimelineHeight();
+  let raf = 0;
+  const move = (ev) => {
+    applyTimelineHeight(startH + (startY - ev.clientY));
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      drawClipWaveforms();
+    });
+  };
+  const up = () => {
+    $("app").classList.remove("row-resizing");
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+    if (raf) cancelAnimationFrame(raf);
+    drawClipWaveforms();
+    setPlayhead();
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
+});
+
+window.addEventListener("resize", () => {
+  applySidebarWidth(currentSidebarWidth());
+  if (!isTimelineCollapsed()) applyTimelineHeight(currentTimelineHeight());
+  requestAnimationFrame(() => {
+    renderRuler();
+    renderClips();
+    setPlayhead();
+  });
+});
+
+function currentSidebarWidth() {
+  const raw = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--sidebar-w"));
+  return Number.isFinite(raw) && raw > 0 ? raw : SIDEBAR_MIN;
+}
 
 function syncSend() {
   $("btn-send").disabled = !$("prompt").value.trim() && !state.pendingFile;

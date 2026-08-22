@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=39" />
+  <link rel="stylesheet" href="styles.css?v=40" />
 </head>
 <body>
   <div id="app" class="shell">
@@ -150,7 +150,15 @@
         </div>
       </section>
 
-      <footer class="transport editor-only" hidden>
+      <footer id="transport" class="transport editor-only" hidden>
+        <div id="timeline-resizer" class="timeline-resizer" role="separator" aria-orientation="horizontal" title="Drag up to make the timeline taller">
+          <span class="timeline-grip" aria-hidden="true"></span>
+          <button type="button" id="btn-timeline-collapse" class="timeline-collapse-btn" title="Collapse timeline" aria-label="Collapse timeline">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </button>
+        </div>
         <div id="retranscribe-bar" class="retranscribe-bar" hidden>
           <span class="retranscribe-msg">Timeline was edited. Re-transcribe so the words above match this cut.</span>
           <div class="retranscribe-actions">
@@ -158,7 +166,7 @@
             <button type="button" id="btn-retranscribe" class="retranscribe-btn">Re-transcribe</button>
           </div>
         </div>
-        <div class="transport-controls">
+        <div id="transport-controls" class="transport-controls">
           <div class="transport-left">
             <button id="btn-undo-tl" class="icon-btn" title="Undo (⌘Z)" type="button" disabled>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-4"/></svg>
@@ -259,6 +267,6 @@
   <input id="file" type="file" accept="audio/*,video/*,.mp3,.wav,.m4a,.mp4,.mov,.mkv" hidden />
   <input id="clip-file" type="file" accept="audio/*,video/*,.mp3,.wav,.m4a,.mp4,.mov,.mkv" hidden />
   <audio id="audio" preload="auto"></audio>
-  <script src="app.js?v=33"></script>
+  <script src="app.js?v=34"></script>
 </body>
 </html>
