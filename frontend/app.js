@@ -1879,10 +1879,8 @@ function applySidebarWidth(px) {
 function setChatCollapsed(on) {
   $("app").classList.toggle("chat-collapsed", on);
   $("btn-expand").hidden = !on;
-  $("chat-rail").hidden = !on;
   $("btn-collapse").title = "Collapse chat";
   $("btn-expand").title = "Open chat";
-  $("chat-rail").title = "Open chat";
   localStorage.setItem("tv-chat-collapsed", on ? "1" : "0");
   requestAnimationFrame(() => {
     renderRuler();
@@ -1893,7 +1891,6 @@ function setChatCollapsed(on) {
 
 $("btn-collapse").onclick = () => setChatCollapsed(true);
 $("btn-expand").onclick = () => setChatCollapsed(false);
-$("chat-rail").onclick = () => setChatCollapsed(false);
 
 (() => {
   const saved = Number(localStorage.getItem("tv-sidebar-w"));
