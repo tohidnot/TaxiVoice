@@ -1895,12 +1895,10 @@ function currentTimelineHeight() {
 function timelineMaxHeight() {
   const controls = $("transport-controls");
   const bar = $("retranscribe-bar");
-  const resizer = $("timeline-resizer");
   const chrome =
     52 +
     (controls ? controls.offsetHeight : 60) +
-    (bar && !bar.hidden ? bar.offsetHeight : 0) +
-    (resizer ? resizer.offsetHeight : 12);
+    (bar && !bar.hidden ? bar.offsetHeight : 0);
   return Math.max(timelineMinHeight(), window.innerHeight - chrome - TIMELINE_STAGE_MIN);
 }
 
@@ -1922,12 +1920,12 @@ function setTimelineCollapsed(on) {
   const btn = $("btn-timeline-collapse");
   const resizer = $("timeline-resizer");
   if (btn) {
-    btn.title = on ? "Expand timeline" : "Collapse timeline";
-    btn.setAttribute("aria-label", on ? "Expand timeline" : "Collapse timeline");
+    btn.title = on ? "Show timeline" : "Collapse timeline";
+    btn.setAttribute("aria-label", on ? "Show timeline" : "Collapse timeline");
     btn.setAttribute("aria-expanded", on ? "false" : "true");
   }
   if (resizer) {
-    resizer.title = on ? "Click to restore the timeline" : "Drag up to make the timeline taller";
+    resizer.title = on ? "Click to restore the timeline" : "Drag to make the timeline taller";
   }
   localStorage.setItem("tv-timeline-collapsed", on ? "1" : "0");
   requestAnimationFrame(() => {
@@ -1989,7 +1987,6 @@ $("resizer").addEventListener("mousedown", (e) => {
 
 $("timeline-resizer").addEventListener("mousedown", (e) => {
   if (e.button !== 0) return;
-  if (e.target.closest("#btn-timeline-collapse")) return;
   if (isTimelineCollapsed()) {
     e.preventDefault();
     setTimelineCollapsed(false);

@@ -722,6 +722,7 @@ button:focus-visible {
 }
 
 .transport {
+  position: relative;
   padding: 0;
   background: #fff;
   border-top: 1px solid #ececee;
@@ -730,59 +731,28 @@ button:focus-visible {
   min-height: 0;
 }
 .timeline-resizer {
-  position: relative;
-  height: 12px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: row-resize;
-  background: #fff;
-  -webkit-app-region: no-drag;
-}
-.timeline-grip {
-  width: 36px;
-  height: 3px;
-  border-radius: 2px;
-  background: #d4d4d8;
-  pointer-events: none;
-}
-.timeline-resizer:hover .timeline-grip {
-  background: #a1a1aa;
-}
-.timeline-collapse-btn {
   position: absolute;
-  right: 12px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 22px;
-  height: 22px;
-  border: 0;
-  border-radius: 6px;
+  top: -5px;
+  left: 0;
+  right: 0;
+  height: 10px;
+  z-index: 6;
+  cursor: row-resize;
   background: transparent;
-  color: #8a8a90;
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-  padding: 0;
-}
-.timeline-collapse-btn:hover {
-  background: #ececee;
-  color: #111;
-}
-.timeline-collapse-btn svg {
-  display: block;
-  transition: transform 0.15s ease;
-}
-.transport.timeline-collapsed .timeline-collapse-btn svg {
-  transform: rotate(180deg);
+  -webkit-app-region: no-drag;
 }
 .transport.timeline-collapsed .timeline-resizer {
   cursor: pointer;
-  height: 16px;
 }
 .transport.timeline-collapsed .timeline-container {
   display: none;
+}
+#btn-timeline-collapse svg {
+  display: block;
+  transition: transform 0.15s ease;
+}
+.transport.timeline-collapsed #btn-timeline-collapse svg {
+  transform: rotate(180deg);
 }
 .transport-controls {
   display: grid;
@@ -876,10 +846,12 @@ button:focus-visible {
 .zoom-cluster {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   background: #f4f4f6;
-  padding: 2px 6px;
+  padding: 3px 4px;
   border-radius: 8px;
+  height: 32px;
+  box-sizing: border-box;
 }
 .mini-btn {
   width: 26px !important;
@@ -887,6 +859,19 @@ button:focus-visible {
   min-width: 26px;
   padding: 0;
   border-radius: 6px;
+}
+#btn-timeline-collapse {
+  position: relative;
+  margin-left: 4px;
+}
+#btn-timeline-collapse::before {
+  content: "";
+  position: absolute;
+  left: -4px;
+  top: 5px;
+  bottom: 5px;
+  width: 1px;
+  background: #e0e0e4;
 }
 #zoom-slider {
   width: 80px;
