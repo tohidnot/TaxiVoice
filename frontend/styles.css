@@ -877,6 +877,20 @@ button:focus-visible {
   box-shadow: 0 0 0 1.5px #1ec8f0;
   z-index: 5;
 }
+.timeline-marquee {
+  position: absolute;
+  border: 1px solid rgba(30, 200, 240, 0.95);
+  background: rgba(30, 200, 240, 0.14);
+  pointer-events: none;
+  z-index: 70;
+  box-sizing: border-box;
+}
+.timeline-marquee[hidden] { display: none !important; }
+body.selecting-clips,
+body.selecting-clips * {
+  cursor: crosshair !important;
+  user-select: none !important;
+}
 .timeline-clip.dragging {
   opacity: 0.92;
   cursor: grabbing;

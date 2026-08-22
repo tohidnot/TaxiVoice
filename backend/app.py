@@ -466,7 +466,8 @@ class ClipTrimBody(BaseModel):
 
 
 class ClipIdBody(BaseModel):
-    id: str
+    id: str | None = None
+    ids: list[str] | None = None
 
 
 class ClipPasteBody(BaseModel):
@@ -830,11 +831,16 @@ def trim_clip(pid: str, body: ClipTrimBody):
 def delete_clip(pid: str, body: ClipIdBody):
     meta = _load(pid)
     clips = _ensure_clips(meta)
-    clip = next((c for c in clips if c["id"] == body.id), None)
-    if not clip:
+    want = list(body.ids or [])
+    if body.id:
+        want.append(body.id)
+    want_set = set(want)
+    if not want_set:
+        raise HTTPException(400, "no clips")
+    if not any(c["id"] in want_set for c in clips):
         raise HTTPException(404, "clip not found")
     _push_undo(meta)
-    meta["clips"] = [c for c in clips if c["id"] != body.id]
+    meta["clips"] = [c for c in clips if c["id"] not in want_set]
     meta["needs_retranscribe"] = True
     _save(meta)
     return _public(meta)
